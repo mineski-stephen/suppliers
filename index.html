@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Procurement Database</title>
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="header-title" id="app-title">Procurement Database</div>
+        <div class="header-actions">
+            <button class="icon-btn" id="settings-btn" title="Settings">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="3"/><path d="M12 1v2m0 18v2M4.22 4.22l1.42 1.42m12.73 12.73l1.42 1.42M1 12h2m18 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+                </svg>
+            </button>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="main-content" id="main-content">
+        <!-- Search Area -->
+        <div class="search-area">
+            <img src="img/mineski_logo.svg" alt="" class="search-logo">
+            <div class="search-box">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
+                </svg>
+                <input type="text" class="search-input" id="search-input" placeholder="Search procurement orders..." autocomplete="off" spellcheck="false">
+                <button class="search-clear" id="search-clear" title="Clear search">
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M18 6 6 18M6 6l12 12"/>
+                    </svg>
+                </button>
+                <button class="search-toggle" id="exact-toggle" title="Exact match only" aria-pressed="false">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/>
+                    </svg>
+                    <span>Exact</span>
+                </button>
+            </div>
+            <div class="stats">
+                <span><strong id="stat-records">0</strong> records</span>
+                <span><strong id="stat-suppliers">0</strong> suppliers</span>
+            </div>
+            <div class="search-tabs" id="search-tabs">
+                <button class="search-tab active" data-tab="all">All<span class="tab-badge" style="display:none"></span></button>
+                <button class="search-tab" data-tab="particulars">Particulars<span class="tab-badge" style="display:none"></span></button>
+                <button class="search-tab" data-tab="suppliers">Suppliers<span class="tab-badge" style="display:none"></span></button>
+                <button class="search-tab" data-tab="projects">Projects<span class="tab-badge" style="display:none"></span></button>
+            </div>
+        </div>
+
+        <!-- Results -->
+        <div class="results-area">
+            <div class="results-count" id="results-count"></div>
+            <div class="results-list" id="results-list"></div>
+        </div>
+    </main>
+
+    <!-- Detail Panel -->
+    <aside class="detail-panel" id="detail-panel">
+        <div class="detail-header">
+            <span class="detail-header-title">Order Details</span>
+            <button class="icon-btn" id="detail-close" title="Close">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M18 6 6 18M6 6l12 12"/>
+                </svg>
+            </button>
+        </div>
+        <div class="detail-content" id="detail-content"></div>
+    </aside>
+
+    <!-- Password Modal -->
+    <div class="modal-overlay" id="modal-overlay"></div>
+    <div class="modal" id="password-modal">
+        <div class="modal-title">Database Access</div>
+        <div class="modal-desc">Enter the password to decrypt the procurement database.</div>
+        <div class="modal-error" id="modal-error"></div>
+        <div class="modal-info" id="modal-info"></div>
+        <input type="password" class="modal-input" id="modal-password" placeholder="Enter password">
+        <button class="modal-btn" id="modal-submit">
+            <span>Unlock Database</span>
+            <div class="modal-spinner" id="modal-spinner"></div>
+        </button>
+        <div class="modal-progress" id="modal-progress">
+            <div class="modal-progress-track"><div class="modal-progress-bar" id="modal-progress-bar"></div></div>
+            <div class="modal-progress-label" id="modal-progress-label">0%</div>
+        </div>
+    </div>
+
+    <!-- Encrypt Offer Modal -->
+    <div class="modal encrypt-offer" id="encrypt-offer-modal">
+        <div class="modal-title">Unencrypted Database</div>
+        <p>The database file is not encrypted. Would you like to encrypt it now for security?</p>
+        <div class="encrypt-offer-actions">
+            <button class="btn-primary" id="encrypt-offer-yes">Encrypt Now</button>
+            <button class="btn-secondary" id="encrypt-offer-no">Skip</button>
+        </div>
+    </div>
+
+    <!-- Settings Panel -->
+    <div class="settings-overlay" id="settings-overlay"></div>
+    <div class="settings-panel" id="settings-panel">
+        <div class="settings-header">
+            <span class="settings-title">Settings</span>
+            <button class="icon-btn" id="settings-close" title="Close settings">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M18 6 6 18M6 6l12 12"/>
+                </svg>
+            </button>
+        </div>
+
+        <!-- Database Info Section -->
+        <div class="settings-section" id="settings-db-section" style="display:none">
+            <div class="settings-section-title">Database</div>
+            <div class="settings-db-date" id="settings-db-date"></div>
+        </div>
+
+        <!-- Theme Section -->
+        <div class="settings-section">
+            <div class="settings-section-title">Theme</div>
+            <div class="theme-options">
+                <button class="theme-option" data-theme="system">System</button>
+                <button class="theme-option" data-theme="light">Light</button>
+                <button class="theme-option" data-theme="dark">Dark</button>
+            </div>
+        </div>
+
+        <!-- Encrypt Section -->
+        <div class="settings-section">
+            <div class="settings-section-title">Encrypt Database File</div>
+            <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px;">
+                Upload an .xlsx or .csv file, encrypt it, and download the .enc file to place in your data/ directory.
+            </p>
+            <div class="enc-file-wrapper">
+                <button class="enc-file-btn" id="settings-enc-file-btn" type="button">Choose File</button>
+                <span class="enc-file-name" id="settings-enc-file-name">No file chosen</span>
+                <input type="file" class="enc-file-input" id="settings-enc-file" accept=".xlsx,.xlsm,.csv">
+            </div>
+            <input type="password" class="enc-password-input" id="settings-enc-password" placeholder="Encryption password">
+            <button class="enc-btn" id="settings-enc-btn">Encrypt &amp; Download</button>
+            <div class="enc-status" id="settings-enc-status"></div>
+        </div>
+    </div>
+
+    <!-- Libraries -->
+    <script src="js/papaparse.min.js"></script>
+    <script src="js/xlsx.full.min.js"></script>
+    <script type="module">
+        import * as Orama from 'https://cdn.jsdelivr.net/npm/@orama/orama@3/+esm';
+        import { pluginEmbeddings } from 'https://cdn.jsdelivr.net/npm/@orama/plugin-embeddings@3/+esm';
+        window.Orama = Orama;
+        window.OramaPluginEmbeddings = { pluginEmbeddings };
+        window.dispatchEvent(new Event('orama-ready'));
+    </script>
+
+    <!-- App Scripts -->
+    <script src="js/crypto.js"></script>
+    <script src="js/search.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
