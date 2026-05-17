@@ -473,6 +473,39 @@ body {
 .detail-value a:hover { text-decoration: underline; }
 .detail-value strong { font-weight: 700; color: var(--accent); }
 
+.detail-value, .detail-title, .detail-reqno {
+    cursor: pointer;
+    border-radius: 4px;
+    transition: background var(--transition);
+}
+.detail-value:hover, .detail-title:hover, .detail-reqno:hover { background: var(--bg-hover); }
+@keyframes copyFlash {
+    0% { background: var(--accent-light); }
+    100% { background: transparent; }
+}
+.copy-flash { animation: copyFlash 0.7s ease; }
+
+.copy-badge {
+    position: fixed;
+    transform: translateX(-50%) translateY(-100%);
+    background: var(--text-primary);
+    color: var(--bg-primary);
+    font-size: 0.75rem;
+    font-weight: 600;
+    font-family: var(--font);
+    padding: 4px 10px;
+    border-radius: 6px;
+    pointer-events: none;
+    z-index: 9999;
+    white-space: nowrap;
+    animation: copyBadgeUp 0.8s ease forwards;
+}
+@keyframes copyBadgeUp {
+    0%   { opacity: 1; transform: translateX(-50%) translateY(-100%); }
+    70%  { opacity: 1; transform: translateX(-50%) translateY(-160%); }
+    100% { opacity: 0; transform: translateX(-50%) translateY(-180%); }
+}
+
 body.detail-open .main-content { width: 50vw; }
 body.detail-open .results-area { max-width: min(680px, 100%); margin-left: auto; margin-right: auto; }
 body.detail-open .search-area { max-width: min(680px, 100%); margin-left: auto; margin-right: auto; }

@@ -682,6 +682,27 @@ const App = (() => {
             if (query) performSearch(query);
         });
 
+        // Copy on click in detail pane
+        $("#detail-content").addEventListener("click", (e) => {
+            if (e.target.closest("a")) return;
+            const target = e.target.closest(".detail-value, .detail-title, .detail-reqno");
+            if (!target) return;
+            const text = target.textContent.trim();
+            if (!text) return;
+            navigator.clipboard.writeText(text).then(() => {
+                target.classList.add("copy-flash");
+                setTimeout(() => target.classList.remove("copy-flash"), 700);
+
+                const badge = document.createElement("div");
+                badge.className = "copy-badge";
+                badge.textContent = "Copied!";
+                badge.style.left = e.clientX + "px";
+                badge.style.top = e.clientY + "px";
+                document.body.appendChild(badge);
+                badge.addEventListener("animationend", () => badge.remove());
+            });
+        });
+
         // Detail
         $("#detail-close").addEventListener("click", closeDetail);
         document.addEventListener("click", (e) => {
