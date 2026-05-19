@@ -306,6 +306,7 @@ const App = (() => {
     function renderResults(results, query) {
         const list = $("#results-list");
         list.innerHTML = "";
+        window.scrollTo(0, 0);
         selectedIndex = -1;
         closeDetail();
 
@@ -608,7 +609,7 @@ const App = (() => {
                             outRow.push(text);
                             outRow.push(url);
                         } else {
-                            outRow.push(cell ? String(cell.v || "") : "");
+                            outRow.push(cell ? (cell.w != null ? cell.w : String(cell.v || "")) : "");
                         }
                     }
                     rows.push(outRow);
