@@ -96,13 +96,14 @@ const Search = (() => {
         return out.sort(statusPrioritySort);
     }
 
-    function parseQuotedPhrases(query) {
+    function parseQuery(query) {
         const phrases = [];
-        const re = /"([^"]+)"/g;
-        let m;
-        while ((m = re.exec(query)) !== null) phrases.push(m[1]);
-        const remainder = query.replace(re, "").trim();
-        return { phrases, remainder };
+        const excludes = [];
+        let q = query.replace(/-"([^"]+)"/g, (_, p) => { excludes.push(p); return ""; });
+        q = q.replace(/"([^"]+)"/g, (_, p) => { phrases.push(p); return ""; });
+        q = q.replace(/(?:^|\s)-(\S+)/g, (_, w) => { excludes.push(w); return ""; });
+        const remainder = q.trim();
+        return { phrases, excludes, remainder };
     }
 
     function rowContainsPhrases(row, phrases, fields) {
@@ -113,26 +114,48 @@ const Search = (() => {
         });
     }
 
+    function rowContainsExcludes(row, excludes, fields) {
+        const targets = fields ? fields.map(f => row[f]) : Object.values(row);
+        return excludes.some(ex => {
+            const e = ex.toLowerCase();
+            return targets.some(v => typeof v === "string" && v.toLowerCase().includes(e));
+        });
+    }
+
     async function search(query, opts = {}) {
         const { tab = "all", exact = false, limit = 500 } = opts;
         if (!query.trim() || !ready) return [];
 
         if (exact) return exactSubstring(query, tab, limit);
 
-        const { phrases, remainder } = parseQuotedPhrases(query);
+        const { phrases, excludes, remainder } = parseQuery(query);
         const fields = TAB_FIELD_NAMES[tab];
 
-        if (phrases.length > 0 && !remainder) {
+        // Only exclusions, no positive terms → all rows minus excluded
+        if (!remainder && phrases.length === 0 && excludes.length > 0) {
             const out = [];
             for (let i = 0; i < rawData.length && out.length < limit; i++) {
-                if (rowContainsPhrases(rawData[i], phrases, fields)) {
+                if (!rowContainsExcludes(rawData[i], excludes, fields)) {
                     out.push({ item: rawData[i], score: 0 });
                 }
             }
             return out.sort(statusPrioritySort);
         }
 
-        const searchTerm = phrases.length > 0 ? remainder : query;
+        // Only quoted phrases (+ optional exclusions), no free text
+        if (phrases.length > 0 && !remainder) {
+            const out = [];
+            for (let i = 0; i < rawData.length && out.length < limit; i++) {
+                if (rowContainsPhrases(rawData[i], phrases, fields) &&
+                    (excludes.length === 0 || !rowContainsExcludes(rawData[i], excludes, fields))) {
+                    out.push({ item: rawData[i], score: 0 });
+                }
+            }
+            return out.sort(statusPrioritySort);
+        }
+
+        // Hybrid search on remainder
+        const searchTerm = remainder;
         const Orama = window.Orama || window.orama;
         const properties = TAB_PROPERTIES[tab];
 
@@ -149,6 +172,9 @@ const Search = (() => {
 
         if (phrases.length > 0) {
             out = out.filter(r => rowContainsPhrases(r.item, phrases, fields));
+        }
+        if (excludes.length > 0) {
+            out = out.filter(r => !rowContainsExcludes(r.item, excludes, fields));
         }
 
         const q = searchTerm.toLowerCase();

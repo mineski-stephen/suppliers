@@ -91,6 +91,13 @@
                             <label class="filter-check"><input type="checkbox" id="outsource-hide-all"> Hide All Outsourced</label>
                         </div>
                     </div>
+                    <div class="filter-section">
+                        <div class="filter-section-title">Currency</div>
+                        <div class="filter-checks">
+                            <label class="filter-check"><input type="checkbox" id="currency-filter-php" data-currency-filter="PHP"> PHP Only</label>
+                            <label class="filter-check"><input type="checkbox" id="currency-filter-usd" data-currency-filter="USD"> USD Only</label>
+                        </div>
+                    </div>
                     <div class="filter-section filter-section-last">
                         <div class="filter-section-title">Group By</div>
                         <div class="filter-options">
@@ -140,10 +147,13 @@
         <div class="modal-error" id="modal-error"></div>
         <div class="modal-info" id="modal-info"></div>
         <input type="password" class="modal-input" id="modal-password" placeholder="Enter password">
-        <button class="modal-btn" id="modal-submit">
-            <span>Unlock Database</span>
-            <div class="modal-spinner" id="modal-spinner"></div>
-        </button>
+        <div class="modal-btn-row" id="modal-btn-row">
+            <button class="modal-btn" id="modal-submit">
+                <span>Unlock Database</span>
+                <div class="modal-spinner" id="modal-spinner"></div>
+            </button>
+            <button class="modal-btn modal-cancel" id="modal-cancel" style="display:none">Cancel</button>
+        </div>
         <div class="modal-progress" id="modal-progress">
             <div class="modal-progress-track"><div class="modal-progress-bar" id="modal-progress-bar"></div></div>
             <div class="modal-progress-label" id="modal-progress-label">0%</div>
@@ -185,6 +195,24 @@
                 <button class="theme-option" data-theme="system">System</button>
                 <button class="theme-option" data-theme="light">Light</button>
                 <button class="theme-option" data-theme="dark">Dark</button>
+            </div>
+        </div>
+
+        <!-- Exchange Rate Section -->
+        <div class="settings-section">
+            <div class="settings-section-title">Exchange Rate</div>
+            <div class="exchange-rate-row">
+                <span>1 USD =</span>
+                <input type="number" class="exchange-rate-input" id="settings-exchange-rate" value="57" min="1" step="0.01">
+                <span>PHP</span>
+            </div>
+            <div class="currency-display-row">
+                <span>Show prices in:</span>
+                <div class="currency-options">
+                    <button class="currency-option active" data-currency="">Default</button>
+                    <button class="currency-option" data-currency="PHP">PHP</button>
+                    <button class="currency-option" data-currency="USD">USD</button>
+                </div>
             </div>
         </div>
 

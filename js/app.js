@@ -22,9 +22,15 @@ const App = (() => {
     let currentSort = null;
     let statusFilters = new Set(["Approved"]);
     let outsourceMode = null; // null | "only" | "hide"
+    let currencyFilter = null; // null | "PHP" | "USD"
     let groupBy = null;
     let cachedResults = null;
     let cachedQuery = "";
+    let exchangeRate = 57;
+    let currencyDisplay = null; // null | "PHP" | "USD"
+    let currentDetailItem = null;
+    let godmodeActive = false;
+    let godmodeString = "godmode";
 
     const REQUIRED_COLUMNS = ["Request No.", "Status", "Particulars_Item", "Supplier Details_Supplier Name", "Project Name"];
 
@@ -32,10 +38,18 @@ const App = (() => {
     const $$ = (sel) => document.querySelectorAll(sel);
 
     async function loadConfig() {
-        const resp = await fetch("config.json");
-        config = await resp.json();
+        try {
+            const resp = await fetch("config.json");
+            config = await resp.json();
+        } catch (e) {
+            console.error("Failed to load config.json:", e);
+            config = {};
+        }
         document.title = config.appName || "Procurement Database";
         $("#app-title").textContent = config.appName || "Procurement Database";
+        if (config.godmodeKey) {
+            try { godmodeString = atob(config.godmodeKey); } catch {}
+        }
     }
 
     function getDebugPassword() {
@@ -53,6 +67,7 @@ const App = (() => {
         const infoEl = $("#modal-info");
         const passInput = $("#modal-password");
         const submitBtn = $("#modal-submit");
+        const cancelBtn = $("#modal-cancel");
         const spinner = $("#modal-spinner");
         const progEl = $("#modal-progress");
 
@@ -63,6 +78,7 @@ const App = (() => {
         passInput.value = opts.prefill || "";
         submitBtn.disabled = false;
         spinner.style.display = "none";
+        cancelBtn.style.display = opts.showCancel ? "" : "none";
 
         const showProgress = opts.progress !== undefined;
         progEl.classList.toggle("visible", showProgress);
@@ -70,10 +86,10 @@ const App = (() => {
 
         if (opts.hideInput || showProgress) {
             passInput.style.display = "none";
-            submitBtn.style.display = "none";
+            $("#modal-btn-row").style.display = "none";
         } else {
             passInput.style.display = "";
-            submitBtn.style.display = "";
+            $("#modal-btn-row").style.display = "";
         }
 
         modal.classList.add("visible");
@@ -82,19 +98,29 @@ const App = (() => {
         if (showProgress) return Promise.resolve();
 
         return new Promise((resolve) => {
+            const cleanup = () => {
+                submitBtn.removeEventListener("click", handler);
+                passInput.removeEventListener("keydown", keyHandler);
+                cancelBtn.removeEventListener("click", cancelHandler);
+            };
             const handler = (e) => {
                 e.preventDefault();
                 submitBtn.disabled = true;
                 spinner.style.display = "inline-block";
-                submitBtn.removeEventListener("click", handler);
-                passInput.removeEventListener("keydown", keyHandler);
+                cleanup();
                 resolve(passInput.value);
+            };
+            const cancelHandler = () => {
+                cleanup();
+                resolve(null);
             };
             const keyHandler = (e) => {
                 if (e.key === "Enter") handler(e);
+                if (e.key === "Escape" && opts.showCancel) cancelHandler();
             };
             submitBtn.addEventListener("click", handler);
             passInput.addEventListener("keydown", keyHandler);
+            cancelBtn.addEventListener("click", cancelHandler);
             if (!opts.hideInput) passInput.focus();
             if (opts.autoSubmit && opts.prefill) {
                 setTimeout(() => handler(new Event("click")), 300);
@@ -255,6 +281,7 @@ const App = (() => {
         $("#search-input").focus();
         updateStats();
         renderCarousel();
+        console.log("%c🔑 Hint: Type \"%s\" in the search box and press Enter for full database access.", "color: #4dabf7; font-style: italic;", godmodeString);
     }
 
     function updateStats() {
@@ -462,6 +489,12 @@ const App = (() => {
     // --- Search UI ---
     function onSearchInput() {
         clearTimeout(searchTimeout);
+        if (godmodeActive) {
+            const q = $("#search-input").value.trim();
+            if (q.toLowerCase() !== godmodeString.toLowerCase()) {
+                godmodeActive = false;
+            }
+        }
         searchTimeout = setTimeout(() => {
             const query = $("#search-input").value.trim();
             if (!query) {
@@ -558,6 +591,14 @@ const App = (() => {
             });
         }
 
+        // Currency filter
+        if (currencyFilter) {
+            filtered = filtered.filter(r => {
+                const cur = (r.item["Particulars_Unit Price-Currency"] || "PHP").toUpperCase();
+                return cur === currencyFilter;
+            });
+        }
+
         // Sort
         if (currentSort) {
             const fn = getSortFunction(currentSort);
@@ -571,8 +612,8 @@ const App = (() => {
         switch (key) {
             case "date-desc": return (a, b) => new Date(b.item["Submitted at"] || 0) - new Date(a.item["Submitted at"] || 0);
             case "date-asc": return (a, b) => new Date(a.item["Submitted at"] || 0) - new Date(b.item["Submitted at"] || 0);
-            case "price-desc": return (a, b) => (parseFloat(b.item["Particulars_Price"]) || 0) - (parseFloat(a.item["Particulars_Price"]) || 0);
-            case "price-asc": return (a, b) => (parseFloat(a.item["Particulars_Price"]) || 0) - (parseFloat(b.item["Particulars_Price"]) || 0);
+            case "price-desc": return (a, b) => toPhp(parseFloat(b.item["Particulars_Price"]) || 0, b.item["Particulars_Unit Price-Currency"] || "PHP") - toPhp(parseFloat(a.item["Particulars_Price"]) || 0, a.item["Particulars_Unit Price-Currency"] || "PHP");
+            case "price-asc": return (a, b) => toPhp(parseFloat(a.item["Particulars_Price"]) || 0, a.item["Particulars_Unit Price-Currency"] || "PHP") - toPhp(parseFloat(b.item["Particulars_Price"]) || 0, b.item["Particulars_Unit Price-Currency"] || "PHP");
             case "project-asc": return (a, b) => (a.item["Project Code"] || "").localeCompare(b.item["Project Code"] || "");
             case "project-desc": return (a, b) => (b.item["Project Code"] || "").localeCompare(a.item["Project Code"] || "");
             default: return () => 0;
@@ -583,6 +624,7 @@ const App = (() => {
         const active = currentSort != null ||
             statusFilters.size !== 1 || !statusFilters.has("Approved") ||
             outsourceMode != null ||
+            currencyFilter != null ||
             groupBy != null;
         $("#filter-badge").style.display = active ? "" : "none";
     }
@@ -638,6 +680,26 @@ const App = (() => {
         list.appendChild(fragment);
     }
 
+    function toPhp(amount, currency) {
+        if (!currency || currency === "PHP") return amount;
+        if (currency === "USD") return amount * exchangeRate;
+        return amount;
+    }
+
+    function formatPrice(amount, currency) {
+        if (!amount || isNaN(amount)) return "";
+        if (currencyDisplay === "PHP") {
+            const val = toPhp(amount, currency);
+            return "PHP " + val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
+        if (currencyDisplay === "USD") {
+            const val = currency === "USD" ? amount : amount / exchangeRate;
+            return "USD " + val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
+        const c = currency || "PHP";
+        return c + " " + amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
     function buildResultCard(r, idx, query) {
         const item = r.item;
         const card = document.createElement("div");
@@ -655,8 +717,8 @@ const App = (() => {
 
         const qty = item["Particulars_Quantity"] || "";
         const unitPrice = item["Particulars_Unit Price"] || "";
-        const unitPriceFormatted = unitPrice ? Number(unitPrice).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "";
-        const priceFormatted = price ? Number(price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "";
+        const unitPriceFmt = unitPrice ? formatPrice(Number(unitPrice), currency) : "";
+        const totalPriceFmt = price ? formatPrice(Number(price), currency) : "";
         const dateFormatted = date ? date.split(" ")[0] : "";
 
         const particularHtml = chipOutsource(highlight(particular, query));
@@ -669,9 +731,9 @@ const App = (() => {
             <div class="result-particular">${particularHtml}</div>
             <div class="result-meta">
                 <span class="result-supplier" title="Supplier">${highlight(supplier, query)}</span>
-                ${(unitPriceFormatted || priceFormatted) ? `<div class="result-pricing">
-                    ${unitPriceFormatted ? `<div class="result-unit-price">${esc(qty || "1")} x ${esc(currency)} ${unitPriceFormatted}</div>` : ""}
-                    ${priceFormatted ? `<div class="result-total-price">${unitPriceFormatted ? "Total " : ""}${esc(currency)} ${priceFormatted}</div>` : ""}
+                ${(unitPriceFmt || totalPriceFmt) ? `<div class="result-pricing">
+                    ${unitPriceFmt ? `<div class="result-unit-price">${esc(qty || "1")} x ${unitPriceFmt}</div>` : ""}
+                    ${totalPriceFmt ? `<div class="result-total-price">${unitPriceFmt ? "Total " : ""}${totalPriceFmt}</div>` : ""}
                 </div>` : ""}
             </div>
             <div class="result-footer">
@@ -682,7 +744,10 @@ const App = (() => {
         `;
 
         card.style.animationDelay = `${Math.min(idx, 15) * 40}ms`;
-        card.addEventListener("click", () => openDetail(r, idx));
+        card.addEventListener("click", () => {
+            if (selectedIndex === idx) { closeDetail(); return; }
+            openDetail(r, idx);
+        });
         return card;
     }
 
@@ -708,19 +773,25 @@ const App = (() => {
 
         // Sort groups when price sort is active
         let groupEntries = Array.from(groups.entries());
+        function groupSum(items) {
+            return items.reduce((s, { r }) => {
+                const amt = parseFloat(r.item["Particulars_Price"]) || 0;
+                const cur = r.item["Particulars_Unit Price-Currency"] || "PHP";
+                return s + toPhp(amt, cur);
+            }, 0);
+        }
+
         if (currentSort === "price-desc" || currentSort === "price-asc") {
             groupEntries.sort((a, b) => {
-                const sumA = a[1].reduce((s, { r }) => s + (parseFloat(r.item["Particulars_Price"]) || 0), 0);
-                const sumB = b[1].reduce((s, { r }) => s + (parseFloat(r.item["Particulars_Price"]) || 0), 0);
+                const sumA = groupSum(a[1]);
+                const sumB = groupSum(b[1]);
                 return currentSort === "price-desc" ? sumB - sumA : sumA - sumB;
             });
         }
 
         for (const [name, items] of groupEntries) {
-            const totalPrice = items.reduce((sum, { r }) => {
-                return sum + (parseFloat(r.item["Particulars_Price"]) || 0);
-            }, 0);
-            const priceStr = totalPrice > 0 ? "PHP " + totalPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "";
+            const totalPhp = groupSum(items);
+            const priceStr = totalPhp > 0 ? formatPrice(totalPhp, "PHP") : "";
 
             const groupEl = document.createElement("div");
             groupEl.className = "result-group";
@@ -781,10 +852,11 @@ const App = (() => {
         if (!query) return esc(text);
         const escaped = esc(text);
         const terms = [];
+        let cleaned = query.replace(/-"[^"]*"/g, "").replace(/(?:^|\s)-\S+/g, "");
         const quotedRe = /"([^"]+)"/g;
         let m;
-        while ((m = quotedRe.exec(query)) !== null) terms.push(m[1]);
-        const remainder = query.replace(/"[^"]*"/g, "").trim();
+        while ((m = quotedRe.exec(cleaned)) !== null) terms.push(m[1]);
+        const remainder = cleaned.replace(/"[^"]*"/g, "").trim();
         if (remainder) remainder.split(/\s+/).filter(Boolean).forEach(w => terms.push(w));
         if (!terms.length) return escaped;
         let result = escaped;
@@ -857,7 +929,7 @@ const App = (() => {
                 } else if (field.includes("Price") || field.includes("Unit Price")) {
                     const num = Number(val);
                     const curr = item["Particulars_Unit Price-Currency"] || "PHP";
-                    displayVal = !isNaN(num) ? `<strong>${esc(curr)} ${num.toLocaleString(undefined, { minimumFractionDigits: 2 })}</strong>` : esc(val);
+                    displayVal = !isNaN(num) ? `<strong>${formatPrice(num, curr)}</strong>` : esc(val);
                 } else {
                     displayVal = esc(val);
                 }
@@ -880,6 +952,7 @@ const App = (() => {
 
     function openDetail(result, idx) {
         const item = result.item;
+        currentDetailItem = item;
         const panel = $("#detail-panel");
         const content = $("#detail-content");
         selectedIndex = idx;
@@ -909,6 +982,7 @@ const App = (() => {
         document.body.classList.remove("detail-open");
         $$(".result-card").forEach(c => c.classList.remove("selected"));
         selectedIndex = -1;
+        currentDetailItem = null;
     }
 
     // --- Filter Popover ---
@@ -1047,6 +1121,58 @@ const App = (() => {
         }
     }
 
+    // --- Godmode ---
+    async function activateGodmode() {
+        clearTimeout(searchTimeout);
+        if (!godmodeActive) {
+            if (currentPassword) {
+                $(".modal-desc").style.display = "none";
+                let wrongAttempt = false;
+                while (true) {
+                    const pass = await showModal({
+                        info: "Enter the database password to view all records.",
+                        error: wrongAttempt ? "Incorrect password." : "",
+                        showCancel: true,
+                    });
+                    if (pass === null) {
+                        $(".modal-desc").style.display = "";
+                        hideModal();
+                        return;
+                    }
+                    if (pass === currentPassword) break;
+                    wrongAttempt = true;
+                    hideModal();
+                }
+                $(".modal-desc").style.display = "";
+                hideModal();
+            }
+            godmodeActive = true;
+        }
+
+        const allItems = db.map(item => ({ item, score: 0 }));
+        cachedResults = [allItems, allItems, allItems, allItems];
+        cachedQuery = "";
+
+        hideCarousel();
+        const filtered = applyFiltersAndSort(allItems);
+        renderResults(filtered, "");
+
+        const tabs = ["all", "particulars", "suppliers", "projects"];
+        tabs.forEach((tab, i) => {
+            const badge = $(`.search-tab[data-tab="${tab}"] .tab-badge`);
+            if (!badge) return;
+            const count = applyFiltersAndSort(cachedResults[i]).length;
+            if (count > 0) {
+                badge.textContent = count;
+                badge.style.display = "";
+            } else {
+                badge.style.display = "none";
+            }
+        });
+
+        $("#main-content").classList.add("has-results");
+    }
+
     // --- Init ---
     function waitForOrama() {
         if (window.Orama) return Promise.resolve();
@@ -1067,16 +1193,52 @@ const App = (() => {
             btn.addEventListener("click", () => setTheme(btn.dataset.theme));
         });
 
+        // Exchange rate
+        exchangeRate = parseFloat(localStorage.getItem("exchangeRate")) || config.exchangeRate || 57;
+        const savedCurrency = localStorage.getItem("currencyDisplay");
+        currencyDisplay = savedCurrency !== null ? (savedCurrency || null) : (config.currencyDisplay || null);
+        $("#settings-exchange-rate").value = exchangeRate;
+        $$(".currency-option").forEach(btn => {
+            btn.classList.toggle("active", (btn.dataset.currency || "") === (currencyDisplay || ""));
+            btn.addEventListener("click", () => {
+                const val = btn.dataset.currency || null;
+                currencyDisplay = val || null;
+                localStorage.setItem("currencyDisplay", currencyDisplay || "");
+                $$(".currency-option").forEach(b => b.classList.toggle("active", b === btn));
+                if (cachedResults) reapplyFilters();
+                if (currentDetailItem) {
+                    $("#detail-content").innerHTML = buildDetailHtml(currentDetailItem);
+                }
+            });
+        });
+        $("#settings-exchange-rate").addEventListener("change", (e) => {
+            const val = parseFloat(e.target.value);
+            if (val > 0) {
+                exchangeRate = val;
+                localStorage.setItem("exchangeRate", val);
+                if (cachedResults) reapplyFilters();
+            }
+        });
+
         // Search
         $("#search-input").addEventListener("input", onSearchInput);
         $("#search-input").addEventListener("keydown", (e) => {
             if (e.key === "Escape") {
                 $("#search-input").value = "";
+                godmodeActive = false;
                 clearResults();
+            }
+            if (e.key === "Enter") {
+                const q = $("#search-input").value.trim();
+                if (q.toLowerCase() === godmodeString.toLowerCase()) {
+                    e.preventDefault();
+                    activateGodmode();
+                }
             }
         });
         $("#search-clear").addEventListener("click", () => {
             $("#search-input").value = "";
+            godmodeActive = false;
             clearResults();
             $("#search-input").focus();
         });
@@ -1161,6 +1323,30 @@ const App = (() => {
                 outsourceShowOnly.checked = false;
             } else {
                 outsourceMode = null;
+            }
+            updateFilterBadge();
+            if (cachedResults) reapplyFilters();
+        });
+
+        // Currency filter (mutually exclusive)
+        const currFilterPhp = $("#currency-filter-php");
+        const currFilterUsd = $("#currency-filter-usd");
+        currFilterPhp.addEventListener("change", function () {
+            if (this.checked) {
+                currencyFilter = "PHP";
+                currFilterUsd.checked = false;
+            } else {
+                currencyFilter = null;
+            }
+            updateFilterBadge();
+            if (cachedResults) reapplyFilters();
+        });
+        currFilterUsd.addEventListener("change", function () {
+            if (this.checked) {
+                currencyFilter = "USD";
+                currFilterPhp.checked = false;
+            } else {
+                currencyFilter = null;
             }
             updateFilterBadge();
             if (cachedResults) reapplyFilters();

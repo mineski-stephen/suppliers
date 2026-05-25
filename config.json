@@ -2,5 +2,8 @@
   "debugKey": "",
   "database": "2026-05-11-procurement.enc",
   "appName": "Mineski Procurement Database",
-  "theme": "system"
+  "theme": "system",
+  "exchangeRate": 57,
+  "currencyDisplay": "",
+  "godmodeKey": "Z29kbW9kZQ=="
 }
