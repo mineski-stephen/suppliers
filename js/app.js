@@ -8,6 +8,23 @@ const App = (() => {
     let detailTimeout = null;
     let activeTab = "all";
     let exactMatch = false;
+    let userExact = false;
+    let autoExact = false;
+    let carouselRAF = null;
+    let carouselAutoSpeed = 0.5;
+    let carouselVelocity = 0;
+    let carouselDragging = false;
+    let carouselDragStartX = 0;
+    let carouselLastX = 0;
+    let carouselLastTime = 0;
+    let carouselPaused = false;
+    let carouselDidDrag = false;
+    let currentSort = null;
+    let statusFilters = new Set(["Approved"]);
+    let outsourceMode = null; // null | "only" | "hide"
+    let groupBy = null;
+    let cachedResults = null;
+    let cachedQuery = "";
 
     const REQUIRED_COLUMNS = ["Request No.", "Status", "Particulars_Item", "Supplier Details_Supplier Name", "Project Name"];
 
@@ -237,6 +254,7 @@ const App = (() => {
         $("#main-content").classList.add("loaded");
         $("#search-input").focus();
         updateStats();
+        renderCarousel();
     }
 
     function updateStats() {
@@ -260,6 +278,187 @@ const App = (() => {
         }
     }
 
+    // --- Carousel (infinite smooth scroll + drag physics) ---
+    function buildCarouselCard(item) {
+        const reqNo = item["Request No."] || "";
+        const particular = item["Particulars_Item"] || "N/A";
+        const supplier = item["Supplier Details_Supplier Name"] || item["Supplier Details_Account Name"] || "";
+        const project = item["Project Name"] || "";
+        const price = item["Particulars_Price"] || "";
+        const currency = item["Particulars_Unit Price-Currency"] || "PHP";
+        const date = item["Submitted at"] || "";
+        const dateFormatted = date ? date.split(" ")[0] : "";
+        const priceFormatted = price ? Number(price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "";
+
+        const card = document.createElement("div");
+        card.className = "carousel-card";
+        card.innerHTML = `
+            <div class="carousel-reqno">${esc(reqNo)}</div>
+            <div class="carousel-particular">${esc(particular)}</div>
+            <div class="carousel-supplier">${esc(supplier)}</div>
+            ${project ? `<div class="carousel-project">${esc(project)}</div>` : ""}
+            <div class="carousel-footer">
+                <span class="carousel-price">${priceFormatted ? esc(currency) + " " + priceFormatted : ""}</span>
+                <span class="carousel-date">${esc(dateFormatted)}</span>
+            </div>
+        `;
+        card.addEventListener("click", () => {
+            if (!carouselDidDrag) openDetail({ item }, -1);
+        });
+        return card;
+    }
+
+    // Virtual-rotation carousel: cards rotate in a ring.
+    // When a card exits one side, it's moved to the other side.
+    // No cloning, no scrollLeft snapping — seamless infinite loop.
+    let carouselItems = [];      // data items in order
+    let carouselOffset = 0;      // fractional px offset (drives translateX)
+    const CARD_W = 200;
+    const CARD_GAP = 12;
+    const CARD_STEP = CARD_W + CARD_GAP; // 212px per card slot
+
+    function renderCarousel() {
+        const sorted = db.slice().sort((a, b) => {
+            return new Date(b["Submitted at"] || 0) - new Date(a["Submitted at"] || 0);
+        }).slice(0, 10);
+
+        if (sorted.length === 0) return;
+        carouselItems = sorted;
+
+        const container = $("#recent-carousel");
+        container.innerHTML = "";
+
+        // Build one card per item
+        sorted.forEach(item => container.appendChild(buildCarouselCard(item)));
+
+        carouselOffset = 0;
+        layoutCarousel();
+        showCarousel();
+        initCarouselDrag();
+    }
+
+    // Position all cards via translateX based on carouselOffset
+    function layoutCarousel() {
+        const container = $("#recent-carousel");
+        if (!container) return;
+        const cards = container.children;
+        const n = cards.length;
+        if (n === 0) return;
+        const totalRing = n * CARD_STEP;
+        const viewW = container.parentElement.clientWidth || container.clientWidth || 680;
+
+        for (let i = 0; i < n; i++) {
+            // Raw position for this slot
+            let x = i * CARD_STEP + carouselOffset;
+            // Wrap into ring: keep within [-CARD_STEP, totalRing - CARD_STEP)
+            x = ((x % totalRing) + totalRing) % totalRing;
+            // Shift so cards that wrap appear on the left side too
+            if (x > totalRing - CARD_STEP) x -= totalRing;
+            cards[i].style.transform = `translateX(${x}px)`;
+            // Hide cards fully off-screen (perf)
+            cards[i].style.visibility = (x < -CARD_STEP || x > viewW + CARD_STEP) ? "hidden" : "";
+        }
+    }
+
+    function showCarousel() {
+        const el = $("#recent-carousel-container");
+        if (!el || db.length === 0) return;
+        el.style.display = "";
+        carouselPaused = false;
+        startCarouselLoop();
+    }
+
+    function hideCarousel() {
+        const el = $("#recent-carousel-container");
+        if (el) el.style.display = "none";
+        stopCarouselLoop();
+    }
+
+    function startCarouselLoop() {
+        if (carouselRAF) return;
+
+        function tick() {
+            if (!carouselPaused && !carouselDragging) {
+                if (Math.abs(carouselVelocity) > 0.2) {
+                    carouselOffset -= carouselVelocity;
+                    carouselVelocity *= 0.95;
+                } else {
+                    carouselVelocity = 0;
+                    carouselOffset -= carouselAutoSpeed;
+                }
+                layoutCarousel();
+            }
+            carouselRAF = requestAnimationFrame(tick);
+        }
+        carouselRAF = requestAnimationFrame(tick);
+    }
+
+    function stopCarouselLoop() {
+        if (carouselRAF) {
+            cancelAnimationFrame(carouselRAF);
+            carouselRAF = null;
+        }
+    }
+
+    function initCarouselDrag() {
+        const carousel = $("#recent-carousel");
+        if (!carousel) return;
+        let dragStartOffset = 0;
+
+        function onPointerDown(e) {
+            carouselDragging = true;
+            carouselDidDrag = false;
+            carouselVelocity = 0;
+            carouselDragStartX = e.clientX || (e.touches && e.touches[0].clientX) || 0;
+            dragStartOffset = carouselOffset;
+            carouselLastX = carouselDragStartX;
+            carouselLastTime = performance.now();
+            carousel.classList.add("dragging");
+        }
+
+        function onPointerMove(e) {
+            if (!carouselDragging) return;
+            e.preventDefault();
+            const x = e.clientX || (e.touches && e.touches[0].clientX) || 0;
+            const dx = carouselDragStartX - x;
+            if (Math.abs(dx) > 3) carouselDidDrag = true;
+            carouselOffset = dragStartOffset - dx;
+            layoutCarousel();
+
+            const now = performance.now();
+            const dt = now - carouselLastTime;
+            if (dt > 0) {
+                carouselVelocity = (carouselLastX - x) / dt * 16;
+            }
+            carouselLastX = x;
+            carouselLastTime = now;
+        }
+
+        function onPointerUp() {
+            if (!carouselDragging) return;
+            carouselDragging = false;
+            carousel.classList.remove("dragging");
+            carouselVelocity = Math.max(-20, Math.min(20, carouselVelocity));
+            if (carouselDidDrag) {
+                setTimeout(() => { carouselDidDrag = false; }, 300);
+            }
+        }
+
+        carousel.addEventListener("mousedown", onPointerDown);
+        window.addEventListener("mousemove", onPointerMove);
+        window.addEventListener("mouseup", onPointerUp);
+        carousel.addEventListener("touchstart", onPointerDown, { passive: true });
+        carousel.addEventListener("touchmove", onPointerMove, { passive: false });
+        carousel.addEventListener("touchend", onPointerUp);
+    }
+
+    // --- Auto-Exact Detection ---
+    function detectExactPattern(query) {
+        if (/^\d{6,}$/.test(query)) return true;
+        if (/^\d{4}[A-Z]{2,4}-[A-Z]?\d+$/i.test(query)) return true;
+        return false;
+    }
+
     // --- Search UI ---
     function onSearchInput() {
         clearTimeout(searchTimeout);
@@ -269,6 +468,20 @@ const App = (() => {
                 clearResults();
                 return;
             }
+
+            // Auto-exact detection
+            const shouldAutoExact = detectExactPattern(query);
+            if (shouldAutoExact && !userExact) {
+                autoExact = true;
+                exactMatch = true;
+                $("#exact-toggle").setAttribute("aria-pressed", "true");
+            } else if (!shouldAutoExact && autoExact) {
+                autoExact = false;
+                exactMatch = userExact;
+                $("#exact-toggle").setAttribute("aria-pressed", String(exactMatch));
+            }
+
+            hideCarousel();
             performSearch(query);
         }, 200);
     }
@@ -278,13 +491,19 @@ const App = (() => {
         const allResults = await Promise.all(
             tabs.map(tab => Search.search(query, { tab, exact: exactMatch, limit: 500 }))
         );
-        const activeIdx = tabs.indexOf(activeTab);
-        renderResults(allResults[activeIdx], query);
 
+        cachedResults = allResults;
+        cachedQuery = query;
+
+        const activeIdx = tabs.indexOf(activeTab);
+        const filtered = applyFiltersAndSort(allResults[activeIdx]);
+        renderResults(filtered, query);
+
+        // Update badges with filtered counts
         tabs.forEach((tab, i) => {
             const badge = $(`.search-tab[data-tab="${tab}"] .tab-badge`);
             if (!badge) return;
-            const count = allResults[i].length;
+            const count = applyFiltersAndSort(allResults[i]).length;
             if (count > 0) {
                 badge.textContent = count;
                 badge.style.display = "";
@@ -294,6 +513,80 @@ const App = (() => {
         });
     }
 
+    function reapplyFilters() {
+        if (!cachedResults) return;
+        const tabs = ["all", "particulars", "suppliers", "projects"];
+        const activeIdx = tabs.indexOf(activeTab);
+        const filtered = applyFiltersAndSort(cachedResults[activeIdx]);
+        renderResults(filtered, cachedQuery);
+
+        tabs.forEach((tab, i) => {
+            const badge = $(`.search-tab[data-tab="${tab}"] .tab-badge`);
+            if (!badge) return;
+            const count = applyFiltersAndSort(cachedResults[i]).length;
+            if (count > 0) {
+                badge.textContent = count;
+                badge.style.display = "";
+            } else {
+                badge.style.display = "none";
+            }
+        });
+    }
+
+    // --- Filters & Sort ---
+    function applyFiltersAndSort(results) {
+        let filtered = results.slice();
+
+        // Status filter
+        if (statusFilters.size > 0 && statusFilters.size < 4) {
+            filtered = filtered.filter(r => {
+                const status = (r.item["Status"] || "").trim();
+                return statusFilters.has(status);
+            });
+        }
+
+        // Outsource filter
+        if (outsourceMode === "hide") {
+            filtered = filtered.filter(r => {
+                const p = (r.item["Particulars_Item"] || "").toLowerCase();
+                return !p.includes("outsource");
+            });
+        } else if (outsourceMode === "only") {
+            filtered = filtered.filter(r => {
+                const p = (r.item["Particulars_Item"] || "").toLowerCase();
+                return p.includes("outsource");
+            });
+        }
+
+        // Sort
+        if (currentSort) {
+            const fn = getSortFunction(currentSort);
+            filtered.sort(fn);
+        }
+
+        return filtered;
+    }
+
+    function getSortFunction(key) {
+        switch (key) {
+            case "date-desc": return (a, b) => new Date(b.item["Submitted at"] || 0) - new Date(a.item["Submitted at"] || 0);
+            case "date-asc": return (a, b) => new Date(a.item["Submitted at"] || 0) - new Date(b.item["Submitted at"] || 0);
+            case "price-desc": return (a, b) => (parseFloat(b.item["Particulars_Price"]) || 0) - (parseFloat(a.item["Particulars_Price"]) || 0);
+            case "price-asc": return (a, b) => (parseFloat(a.item["Particulars_Price"]) || 0) - (parseFloat(b.item["Particulars_Price"]) || 0);
+            case "project-asc": return (a, b) => (a.item["Project Code"] || "").localeCompare(b.item["Project Code"] || "");
+            case "project-desc": return (a, b) => (b.item["Project Code"] || "").localeCompare(a.item["Project Code"] || "");
+            default: return () => 0;
+        }
+    }
+
+    function updateFilterBadge() {
+        const active = currentSort != null ||
+            statusFilters.size !== 1 || !statusFilters.has("Approved") ||
+            outsourceMode != null ||
+            groupBy != null;
+        $("#filter-badge").style.display = active ? "" : "none";
+    }
+
     function clearResults() {
         $("#results-list").innerHTML = "";
         $("#results-count").textContent = "";
@@ -301,8 +594,20 @@ const App = (() => {
         $("#main-content").classList.remove("has-results");
         selectedIndex = -1;
         $$(".tab-badge").forEach(b => b.style.display = "none");
+        cachedResults = null;
+        cachedQuery = "";
+        showCarousel();
     }
 
+    // --- Outsource Chip ---
+    function chipOutsource(html) {
+        return html.replace(
+            /(<mark>)?(outsourced?)(<\/mark>)?/gi,
+            '<span class="outsource-chip">Outsourced</span>'
+        );
+    }
+
+    // --- Render Results ---
     function renderResults(results, query) {
         const list = $("#results-list");
         list.innerHTML = "";
@@ -316,55 +621,139 @@ const App = (() => {
             return;
         }
 
-        $("#results-count").textContent = `${results.length} result${results.length !== 1 ? "s" : ""}`;
         $("#main-content").classList.add("has-results");
+
+        // Grouped rendering
+        if (groupBy) {
+            renderGroupedResults(results, query);
+            return;
+        }
+
+        $("#results-count").textContent = `${results.length} result${results.length !== 1 ? "s" : ""}`;
 
         const fragment = document.createDocumentFragment();
         results.forEach((r, idx) => {
-            const item = r.item;
-            const card = document.createElement("div");
-            card.className = "result-card" + (r.isRelated ? " related" : "");
-            card.dataset.index = idx;
+            fragment.appendChild(buildResultCard(r, idx, query));
+        });
+        list.appendChild(fragment);
+    }
 
-            const reqNo = item["Request No."] || "N/A";
-            const particular = item["Particulars_Item"] || "N/A";
-            const supplier = item["Supplier Details_Supplier Name"] || item["Supplier Details_Account Name"] || "N/A";
-            const project = item["Project Name"] || "";
-            const price = item["Particulars_Price"] || "";
-            const currency = item["Particulars_Unit Price-Currency"] || "PHP";
-            const status = item["Status"] || "";
-            const date = item["Submitted at"] || "";
+    function buildResultCard(r, idx, query) {
+        const item = r.item;
+        const card = document.createElement("div");
+        card.className = "result-card" + (r.isRelated ? " related" : "");
+        card.dataset.index = idx;
 
-            const qty = item["Particulars_Quantity"] || "";
-            const unitPrice = item["Particulars_Unit Price"] || "";
-            const unitPriceFormatted = unitPrice ? Number(unitPrice).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "";
-            const priceFormatted = price ? Number(price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "";
-            const dateFormatted = date ? date.split(" ")[0] : "";
+        const reqNo = item["Request No."] || "N/A";
+        const particular = item["Particulars_Item"] || "N/A";
+        const supplier = item["Supplier Details_Supplier Name"] || item["Supplier Details_Account Name"] || "N/A";
+        const project = item["Project Name"] || "";
+        const price = item["Particulars_Price"] || "";
+        const currency = item["Particulars_Unit Price-Currency"] || "PHP";
+        const status = item["Status"] || "";
+        const date = item["Submitted at"] || "";
 
-            card.innerHTML = `
-                <div class="result-header">
-                    <span class="result-reqno">${esc(reqNo)}</span>
-                    <span class="result-status status-${status.toLowerCase().replace(/\s+/g, "-")}">${esc(status)}</span>
+        const qty = item["Particulars_Quantity"] || "";
+        const unitPrice = item["Particulars_Unit Price"] || "";
+        const unitPriceFormatted = unitPrice ? Number(unitPrice).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "";
+        const priceFormatted = price ? Number(price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "";
+        const dateFormatted = date ? date.split(" ")[0] : "";
+
+        const particularHtml = chipOutsource(highlight(particular, query));
+
+        card.innerHTML = `
+            <div class="result-header">
+                <span class="result-reqno">${esc(reqNo)}</span>
+                <span class="result-status status-${status.toLowerCase().replace(/\s+/g, "-")}">${esc(status)}</span>
+            </div>
+            <div class="result-particular">${particularHtml}</div>
+            <div class="result-meta">
+                <span class="result-supplier" title="Supplier">${highlight(supplier, query)}</span>
+                ${(unitPriceFormatted || priceFormatted) ? `<div class="result-pricing">
+                    ${unitPriceFormatted ? `<div class="result-unit-price">${esc(qty || "1")} x ${esc(currency)} ${unitPriceFormatted}</div>` : ""}
+                    ${priceFormatted ? `<div class="result-total-price">${unitPriceFormatted ? "Total " : ""}${esc(currency)} ${priceFormatted}</div>` : ""}
+                </div>` : ""}
+            </div>
+            <div class="result-footer">
+                ${project ? `<span class="result-project">${highlight(project, query)}</span>` : ""}
+                ${dateFormatted ? `<span class="result-date">${esc(dateFormatted)}</span>` : ""}
+                ${r.isRelated ? '<span class="result-related-tag">Related</span>' : ""}
+            </div>
+        `;
+
+        card.style.animationDelay = `${Math.min(idx, 15) * 40}ms`;
+        card.addEventListener("click", () => openDetail(r, idx));
+        return card;
+    }
+
+    // --- Grouped Results ---
+    function renderGroupedResults(results, query) {
+        const list = $("#results-list");
+        const groups = new Map();
+
+        results.forEach((r, idx) => {
+            let key = r.item[groupBy] || "";
+            if (!key.trim() && groupBy === "Supplier Details_Supplier Name") {
+                key = r.item["Supplier Details_Account Name"] || "";
+            }
+            key = key.trim() || "Unspecified";
+            if (!groups.has(key)) groups.set(key, []);
+            groups.get(key).push({ r, idx });
+        });
+
+        $("#results-count").textContent = `${results.length} result${results.length !== 1 ? "s" : ""} in ${groups.size} group${groups.size !== 1 ? "s" : ""}`;
+
+        const fragment = document.createDocumentFragment();
+        let globalIdx = 0;
+
+        // Sort groups when price sort is active
+        let groupEntries = Array.from(groups.entries());
+        if (currentSort === "price-desc" || currentSort === "price-asc") {
+            groupEntries.sort((a, b) => {
+                const sumA = a[1].reduce((s, { r }) => s + (parseFloat(r.item["Particulars_Price"]) || 0), 0);
+                const sumB = b[1].reduce((s, { r }) => s + (parseFloat(r.item["Particulars_Price"]) || 0), 0);
+                return currentSort === "price-desc" ? sumB - sumA : sumA - sumB;
+            });
+        }
+
+        for (const [name, items] of groupEntries) {
+            const totalPrice = items.reduce((sum, { r }) => {
+                return sum + (parseFloat(r.item["Particulars_Price"]) || 0);
+            }, 0);
+            const priceStr = totalPrice > 0 ? "PHP " + totalPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "";
+
+            const groupEl = document.createElement("div");
+            groupEl.className = "result-group";
+
+            const header = document.createElement("div");
+            header.className = "result-group-header";
+            header.innerHTML = `
+                <div class="result-group-left">
+                    <svg class="result-group-toggle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="9 18 15 12 9 6"/>
+                    </svg>
+                    <span class="result-group-name">${esc(name)}</span>
+                    <span class="result-group-count">(${items.length})</span>
                 </div>
-                <div class="result-particular">${highlight(particular, query)}</div>
-                <div class="result-meta">
-                    <span class="result-supplier" title="Supplier">${highlight(supplier, query)}</span>
-                    ${(unitPriceFormatted || priceFormatted) ? `<div class="result-pricing">
-                        ${unitPriceFormatted ? `<div class="result-unit-price">${esc(qty || "1")} x ${esc(currency)} ${unitPriceFormatted}</div>` : ""}
-                        ${priceFormatted ? `<div class="result-total-price">${unitPriceFormatted ? "Total " : ""}${esc(currency)} ${priceFormatted}</div>` : ""}
-                    </div>` : ""}
-                </div>
-                <div class="result-footer">
-                    ${project ? `<span class="result-project">${highlight(project, query)}</span>` : ""}
-                    ${dateFormatted ? `<span class="result-date">${esc(dateFormatted)}</span>` : ""}
-                    ${r.isRelated ? '<span class="result-related-tag">Related</span>' : ""}
-                </div>
+                ${priceStr ? `<span class="result-group-sum">${priceStr}</span>` : ""}
             `;
 
-            card.style.animationDelay = `${Math.min(idx, 15) * 40}ms`;
-            card.addEventListener("click", () => openDetail(r, idx));
-            fragment.appendChild(card);
-        });
+            header.addEventListener("click", () => {
+                groupEl.classList.toggle("expanded");
+            });
+
+            const itemsContainer = document.createElement("div");
+            itemsContainer.className = "result-group-items";
+
+            items.forEach(({ r }) => {
+                itemsContainer.appendChild(buildResultCard(r, globalIdx++, query));
+            });
+
+            groupEl.appendChild(header);
+            groupEl.appendChild(itemsContainer);
+            fragment.appendChild(groupEl);
+        }
+
         list.appendChild(fragment);
     }
 
@@ -491,7 +880,6 @@ const App = (() => {
 
         panel.classList.add("open");
         document.body.classList.add("detail-open");
-        panel.scrollTo(0, 0);
         content.scrollTo(0, 0);
 
         clearTimeout(detailTimeout);
@@ -507,6 +895,20 @@ const App = (() => {
         document.body.classList.remove("detail-open");
         $$(".result-card").forEach(c => c.classList.remove("selected"));
         selectedIndex = -1;
+    }
+
+    // --- Filter Popover ---
+    function toggleFilterPopover() {
+        const pop = $("#filter-popover");
+        const btn = $("#filter-btn");
+        const isOpen = pop.style.display !== "none";
+        pop.style.display = isOpen ? "none" : "";
+        btn.classList.toggle("active", !isOpen);
+    }
+
+    function closeFilterPopover() {
+        $("#filter-popover").style.display = "none";
+        $("#filter-btn").classList.remove("active");
     }
 
     // --- Settings ---
@@ -633,7 +1035,7 @@ const App = (() => {
 
     // --- Init ---
     function waitForOrama() {
-        if (window.Orama && window.OramaPluginEmbeddings) return Promise.resolve();
+        if (window.Orama) return Promise.resolve();
         return new Promise(resolve => {
             window.addEventListener("orama-ready", () => resolve(), { once: true });
         });
@@ -670,17 +1072,102 @@ const App = (() => {
             btn.addEventListener("click", () => {
                 activeTab = btn.dataset.tab;
                 $$(".search-tab").forEach(b => b.classList.toggle("active", b === btn));
-                const query = $("#search-input").value.trim();
-                if (query) performSearch(query);
+                if (cachedResults) {
+                    reapplyFilters();
+                }
             });
         });
 
         // Exact match toggle
         $("#exact-toggle").addEventListener("click", () => {
-            exactMatch = !exactMatch;
-            $("#exact-toggle").setAttribute("aria-pressed", exactMatch);
+            userExact = !userExact;
+            autoExact = false;
+            exactMatch = userExact;
+            $("#exact-toggle").setAttribute("aria-pressed", String(exactMatch));
             const query = $("#search-input").value.trim();
             if (query) performSearch(query);
+        });
+
+        // Filter button
+        $("#filter-btn").addEventListener("click", (e) => {
+            e.stopPropagation();
+            toggleFilterPopover();
+        });
+
+        // Sort options
+        $$(".filter-option[data-sort]").forEach(btn => {
+            btn.addEventListener("click", () => {
+                const val = btn.dataset.sort;
+                if (currentSort === val) {
+                    currentSort = null;
+                    btn.classList.remove("active");
+                } else {
+                    $$(".filter-option[data-sort]").forEach(b => b.classList.remove("active"));
+                    currentSort = val;
+                    btn.classList.add("active");
+                }
+                updateFilterBadge();
+                if (cachedResults) reapplyFilters();
+            });
+        });
+
+        // Status checkboxes
+        $$(".filter-check input[data-status]").forEach(cb => {
+            cb.addEventListener("change", () => {
+                if (cb.checked) {
+                    statusFilters.add(cb.dataset.status);
+                } else {
+                    statusFilters.delete(cb.dataset.status);
+                    if (statusFilters.size === 0) {
+                        statusFilters.add("Approved");
+                        $$('.filter-check input[data-status="Approved"]').forEach(c => c.checked = true);
+                    }
+                }
+                updateFilterBadge();
+                if (cachedResults) reapplyFilters();
+            });
+        });
+
+        // Outsource filter (mutually exclusive toggles)
+        const outsourceShowOnly = $("#outsource-show-only");
+        const outsourceHideAll = $("#outsource-hide-all");
+        outsourceShowOnly.addEventListener("change", function () {
+            if (this.checked) {
+                outsourceMode = "only";
+                outsourceHideAll.checked = false;
+            } else {
+                outsourceMode = null;
+            }
+            updateFilterBadge();
+            if (cachedResults) reapplyFilters();
+        });
+        outsourceHideAll.addEventListener("change", function () {
+            if (this.checked) {
+                outsourceMode = "hide";
+                outsourceShowOnly.checked = false;
+            } else {
+                outsourceMode = null;
+            }
+            updateFilterBadge();
+            if (cachedResults) reapplyFilters();
+        });
+
+        // Group by options
+        $$(".filter-option[data-group]").forEach(btn => {
+            btn.addEventListener("click", () => {
+                $$(".filter-option[data-group]").forEach(b => b.classList.remove("active"));
+                btn.classList.add("active");
+                groupBy = btn.dataset.group === "none" ? null : btn.dataset.group;
+                updateFilterBadge();
+                if (cachedResults) reapplyFilters();
+            });
+        });
+
+        // Close filter popover on outside click
+        document.addEventListener("click", (e) => {
+            if (!e.target.closest(".filter-popover") && !e.target.closest(".filter-btn")) {
+                closeFilterPopover();
+            }
         });
 
         // Copy on click in detail pane
@@ -709,7 +1196,9 @@ const App = (() => {
         document.addEventListener("click", (e) => {
             if (document.body.classList.contains("detail-open") &&
                 !e.target.closest("#detail-panel") &&
-                !e.target.closest(".result-card")) {
+                !e.target.closest(".result-card") &&
+                !e.target.closest(".carousel-card") &&
+                !e.target.closest(".result-group-header")) {
                 closeDetail();
             }
         });

@@ -69,25 +69,9 @@ const Search = (() => {
         ready = false;
 
         const Orama = window.Orama || window.orama;
-        const embeddingsModule = window.OramaPluginEmbeddings || window["@orama/plugin-embeddings"];
-
         if (!Orama) throw new Error("Orama library not loaded");
 
-        const plugins = [];
-        if (embeddingsModule && embeddingsModule.pluginEmbeddings) {
-            plugins.push(embeddingsModule.pluginEmbeddings({
-                embeddings: {
-                    defaultProperty: "embedding",
-                    onInsert: {
-                        generate: true,
-                        properties: ["particular", "supplier", "project"],
-                        verbose: false,
-                    },
-                },
-            }));
-        }
-
-        oramaDb = await Orama.create({ schema: SCHEMA, plugins });
+        oramaDb = await Orama.create({ schema: SCHEMA });
 
         const batchSize = 25;
         for (let i = 0; i < data.length; i++) {
@@ -153,19 +137,9 @@ const Search = (() => {
         const properties = TAB_PROPERTIES[tab];
 
         const searchOpts = { term: searchTerm, limit, tolerance: 1 };
-        const hasEmbeddings = !!(window.OramaPluginEmbeddings || window["@orama/plugin-embeddings"]);
-        if (hasEmbeddings) {
-            searchOpts.mode = "hybrid";
-            searchOpts.similarity = 0.5;
-        }
         if (properties) searchOpts.properties = properties;
 
-        let results;
-        try {
-            results = await Orama.search(oramaDb, searchOpts);
-        } catch (e) {
-            results = await Orama.search(oramaDb, { term: searchTerm, limit, properties, tolerance: 1 });
-        }
+        const results = await Orama.search(oramaDb, searchOpts);
 
         const maxScore = results.hits.reduce((m, h) => Math.max(m, h.score || 0), 1);
         let out = results.hits.map(h => ({
