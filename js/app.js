@@ -739,14 +739,28 @@ const App = (() => {
             `;
 
             header.addEventListener("click", () => {
+                const wasExpanded = groupEl.classList.contains("expanded");
                 groupEl.classList.toggle("expanded");
+                // Re-trigger animations on expand by resetting delay from now
+                if (!wasExpanded) {
+                    const cards = itemsContainer.querySelectorAll(".result-card");
+                    cards.forEach((card, i) => {
+                        card.style.animation = "none";
+                        card.offsetHeight; // force reflow
+                        card.style.animation = "";
+                        card.style.animationDelay = `${Math.min(i, 15) * 40}ms`;
+                    });
+                }
             });
 
             const itemsContainer = document.createElement("div");
             itemsContainer.className = "result-group-items";
 
-            items.forEach(({ r }) => {
-                itemsContainer.appendChild(buildResultCard(r, globalIdx++, query));
+            items.forEach(({ r }, localIdx) => {
+                const card = buildResultCard(r, globalIdx++, query);
+                // Delay set per local position; will be re-applied on expand anyway
+                card.style.animationDelay = `${Math.min(localIdx, 15) * 40}ms`;
+                itemsContainer.appendChild(card);
             });
 
             groupEl.appendChild(header);
