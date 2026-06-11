@@ -59,6 +59,160 @@ const App = (() => {
         return "";
     }
 
+    // --- URL Parameters ---
+    let urlDebugKey = "";          // base64 key, re-emitted into URL once it decrypts
+    let suppressUrlUpdate = false; // true while applying params, so we don't fight ourselves
+
+    const SORT_TO_URL = {
+        "date-asc": "dateasc", "date-desc": "datedesc",
+        "price-asc": "priceasc", "price-desc": "pricedesc",
+        "unitprice-asc": "unitpriceasc", "unitprice-desc": "unitpricedesc",
+        "project-asc": "projaz", "project-desc": "projza",
+    };
+    const URL_TO_SORT = Object.fromEntries(Object.entries(SORT_TO_URL).map(([k, v]) => [v, k]));
+    const GROUP_TO_URL = {
+        "Business Unit": "business unit",
+        "Project Name": "project",
+        "Supplier Details_Supplier Name": "supplier",
+    };
+    const URL_TO_GROUP = Object.fromEntries(Object.entries(GROUP_TO_URL).map(([k, v]) => [v, k]));
+    const STATUS_CANON = { "approved": "Approved", "under review": "Under Review", "recalled": "Recalled", "rejected": "Rejected" };
+
+    function getUrlParams() {
+        return new URLSearchParams(location.search);
+    }
+
+    function buildQueryString() {
+        const p = new URLSearchParams();
+        if (urlDebugKey) p.set("debugkey", urlDebugKey);
+        const q = $("#search-input").value.trim();
+        if (q) p.set("q", q);
+        if (exactMatch) p.set("exact", "true");
+        if (activeTab && activeTab !== "all") p.set("tab", activeTab);
+        if (currentSort && SORT_TO_URL[currentSort]) p.set("sort", SORT_TO_URL[currentSort]);
+        const defaultStatus = statusFilters.size === 1 && statusFilters.has("Approved");
+        if (!defaultStatus && statusFilters.size > 0) {
+            p.set("status", Array.from(statusFilters).map(s => s.toLowerCase()).join(","));
+        }
+        if (outsourceMode === "only") p.set("outsource", "show");
+        else if (outsourceMode === "hide") p.set("outsource", "hide");
+        if (currencyFilter) p.set("currency", currencyFilter.toLowerCase());
+        if (groupBy && GROUP_TO_URL[groupBy]) p.set("group", GROUP_TO_URL[groupBy]);
+        const theme = localStorage.getItem("theme") || config.theme || "system";
+        if (theme !== "system") p.set("theme", theme);
+        if (exchangeRate && Number(exchangeRate) !== 57) p.set("exchangerate", String(exchangeRate));
+        if (currencyDisplay) p.set("showprice", currencyDisplay.toLowerCase());
+        // URLSearchParams uses "+" for spaces (matches ?q=a+b); keep commas literal for the status list
+        return p.toString().replace(/%2C/g, ",");
+    }
+
+    function updateUrl() {
+        if (suppressUrlUpdate) return;
+        const qs = buildQueryString();
+        history.replaceState(null, "", qs ? location.pathname + "?" + qs : location.pathname);
+    }
+
+    // Settings that init() reads from localStorage — inject before those reads.
+    function applyUrlSettingsEarly() {
+        const params = getUrlParams();
+        if (params.has("theme")) {
+            const t = params.get("theme").toLowerCase();
+            if (["system", "light", "dark"].includes(t)) localStorage.setItem("theme", t);
+        }
+        if (params.has("exchangerate")) {
+            const r = parseFloat(params.get("exchangerate"));
+            if (r > 0) localStorage.setItem("exchangeRate", String(r));
+        }
+        if (params.has("showprice")) {
+            const s = params.get("showprice").toLowerCase();
+            const map = { "default": "", "php": "PHP", "usd": "USD" };
+            if (s in map) localStorage.setItem("currencyDisplay", map[s]);
+        }
+    }
+
+    // Search / filter / tab / exact state — applied after DB + UI are ready.
+    async function applyUrlStateLate() {
+        const params = getUrlParams();
+        suppressUrlUpdate = true;
+        try {
+        if (params.has("exact")) {
+            const on = params.get("exact").toLowerCase() === "true";
+            userExact = on;
+            exactMatch = on;
+            $("#exact-toggle").setAttribute("aria-pressed", String(on));
+        }
+
+        if (params.has("tab")) {
+            const t = params.get("tab").toLowerCase();
+            if (["all", "particulars", "suppliers", "projects"].includes(t)) {
+                activeTab = t;
+                $$(".search-tab").forEach(b => b.classList.toggle("active", b.dataset.tab === t));
+            }
+        }
+
+        if (params.has("sort")) {
+            const key = URL_TO_SORT[params.get("sort").toLowerCase()];
+            if (key) {
+                currentSort = key;
+                $$(".filter-option[data-sort]").forEach(b => b.classList.toggle("active", b.dataset.sort === key));
+            }
+        }
+
+        if (params.has("status")) {
+            const list = params.get("status").split(",").map(s => STATUS_CANON[s.trim().toLowerCase()]).filter(Boolean);
+            if (list.length > 0) {
+                statusFilters = new Set(list);
+                $$(".filter-check input[data-status]").forEach(cb => { cb.checked = statusFilters.has(cb.dataset.status); });
+            }
+        }
+
+        if (params.has("outsource")) {
+            const v = params.get("outsource").toLowerCase();
+            if (v === "show") { outsourceMode = "only"; $("#outsource-show-only").checked = true; $("#outsource-hide-all").checked = false; }
+            else if (v === "hide") { outsourceMode = "hide"; $("#outsource-hide-all").checked = true; $("#outsource-show-only").checked = false; }
+        }
+
+        if (params.has("currency")) {
+            const v = params.get("currency").toUpperCase();
+            if (v === "PHP" || v === "USD") {
+                currencyFilter = v;
+                $("#currency-filter-php").checked = v === "PHP";
+                $("#currency-filter-usd").checked = v === "USD";
+            }
+        }
+
+        if (params.has("group")) {
+            const g = params.get("group").toLowerCase();
+            const internal = g === "none" ? null : URL_TO_GROUP[g];
+            if (g === "none" || internal) {
+                groupBy = internal;
+                $$(".filter-option[data-group]").forEach(b => {
+                    b.classList.toggle("active", internal ? b.dataset.group === internal : b.dataset.group === "none");
+                });
+            }
+        }
+
+        updateFilterBadge();
+
+        if (params.has("q")) {
+            const q = params.get("q");
+            $("#search-input").value = q;
+            if (!params.has("exact") && detectExactPattern(q.trim())) {
+                autoExact = true;
+                exactMatch = true;
+                $("#exact-toggle").setAttribute("aria-pressed", "true");
+            }
+            if (q.trim()) {
+                hideCarousel();
+                await performSearch(q.trim());
+            }
+        }
+        } finally {
+            suppressUrlUpdate = false;
+        }
+        updateUrl();
+    }
+
     // --- Modal ---
     function showModal(opts = {}) {
         const modal = $("#password-modal");
@@ -223,6 +377,24 @@ const App = (() => {
 
         if (isEncrypted) {
             const debugPass = getDebugPassword();
+
+            // Try URL-provided debug key first (silent auto-unlock)
+            const rawKey = getUrlParams().get("debugkey");
+            if (rawKey) {
+                let urlPass = "";
+                try { urlPass = atob(rawKey); } catch {}
+                if (urlPass) {
+                    try {
+                        const result = await loadEncrypted(buffer, urlPass);
+                        currentPassword = urlPass;
+                        urlDebugKey = rawKey;   // valid → keep it in the URL for sharing
+                        hideModal();
+                        await onDataLoaded(result);
+                        return;
+                    } catch { /* invalid key → fall through to normal password modal */ }
+                }
+            }
+
             let attempts = 0;
             while (attempts < 3) {
                 const pass = await showModal({
@@ -282,6 +454,9 @@ const App = (() => {
         updateStats();
         renderCarousel();
         console.log("%c🔑 Hint: Type \"%s\" in the search box and press Enter for full database access.", "color: #4dabf7; font-style: italic;", godmodeString);
+
+        // Apply URL search/filter/tab state now that data + UI are ready
+        await applyUrlStateLate();
     }
 
     function updateStats() {
@@ -495,6 +670,7 @@ const App = (() => {
                 godmodeActive = false;
             }
         }
+
         searchTimeout = setTimeout(() => {
             const query = $("#search-input").value.trim();
             if (!query) {
@@ -516,6 +692,7 @@ const App = (() => {
 
             hideCarousel();
             performSearch(query);
+            updateUrl();
         }, 200);
     }
 
@@ -567,24 +744,29 @@ const App = (() => {
     }
 
     // --- Filters & Sort ---
-    function applyFiltersAndSort(results) {
+    function getFilterState() {
+        return { statusFilters, outsourceMode, currencyFilter, currentSort };
+    }
+
+    function applyFiltersAndSort(results, state) {
+        if (!state) state = getFilterState();
         let filtered = results.slice();
 
         // Status filter
-        if (statusFilters.size > 0 && statusFilters.size < 4) {
+        if (state.statusFilters.size > 0 && state.statusFilters.size < 4) {
             filtered = filtered.filter(r => {
                 const status = (r.item["Status"] || "").trim();
-                return statusFilters.has(status);
+                return state.statusFilters.has(status);
             });
         }
 
         // Outsource filter
-        if (outsourceMode === "hide") {
+        if (state.outsourceMode === "hide") {
             filtered = filtered.filter(r => {
                 const p = (r.item["Particulars_Item"] || "").toLowerCase();
                 return !p.includes("outsource");
             });
-        } else if (outsourceMode === "only") {
+        } else if (state.outsourceMode === "only") {
             filtered = filtered.filter(r => {
                 const p = (r.item["Particulars_Item"] || "").toLowerCase();
                 return p.includes("outsource");
@@ -592,16 +774,16 @@ const App = (() => {
         }
 
         // Currency filter
-        if (currencyFilter) {
+        if (state.currencyFilter) {
             filtered = filtered.filter(r => {
                 const cur = (r.item["Particulars_Unit Price-Currency"] || "PHP").toUpperCase();
-                return cur === currencyFilter;
+                return cur === state.currencyFilter;
             });
         }
 
         // Sort
-        if (currentSort) {
-            const fn = getSortFunction(currentSort);
+        if (state.currentSort) {
+            const fn = getSortFunction(state.currentSort);
             filtered.sort(fn);
         }
 
@@ -614,6 +796,8 @@ const App = (() => {
             case "date-asc": return (a, b) => new Date(a.item["Submitted at"] || 0) - new Date(b.item["Submitted at"] || 0);
             case "price-desc": return (a, b) => toPhp(parseFloat(b.item["Particulars_Price"]) || 0, b.item["Particulars_Unit Price-Currency"] || "PHP") - toPhp(parseFloat(a.item["Particulars_Price"]) || 0, a.item["Particulars_Unit Price-Currency"] || "PHP");
             case "price-asc": return (a, b) => toPhp(parseFloat(a.item["Particulars_Price"]) || 0, a.item["Particulars_Unit Price-Currency"] || "PHP") - toPhp(parseFloat(b.item["Particulars_Price"]) || 0, b.item["Particulars_Unit Price-Currency"] || "PHP");
+            case "unitprice-asc": return (a, b) => toPhp(parseFloat(a.item["Particulars_Unit Price"]) || 0, a.item["Particulars_Unit Price-Currency"] || "PHP") - toPhp(parseFloat(b.item["Particulars_Unit Price"]) || 0, b.item["Particulars_Unit Price-Currency"] || "PHP");
+            case "unitprice-desc": return (a, b) => toPhp(parseFloat(b.item["Particulars_Unit Price"]) || 0, b.item["Particulars_Unit Price-Currency"] || "PHP") - toPhp(parseFloat(a.item["Particulars_Unit Price"]) || 0, a.item["Particulars_Unit Price-Currency"] || "PHP");
             case "project-asc": return (a, b) => (a.item["Project Code"] || "").localeCompare(b.item["Project Code"] || "");
             case "project-desc": return (a, b) => (b.item["Project Code"] || "").localeCompare(a.item["Project Code"] || "");
             default: return () => 0;
@@ -639,6 +823,7 @@ const App = (() => {
         cachedResults = null;
         cachedQuery = "";
         showCarousel();
+        updateUrl();
     }
 
     // --- Outsource Chip ---
@@ -781,11 +966,11 @@ const App = (() => {
             }, 0);
         }
 
-        if (currentSort === "price-desc" || currentSort === "price-asc") {
+        if (currentSort && currentSort.includes("price")) {
             groupEntries.sort((a, b) => {
                 const sumA = groupSum(a[1]);
                 const sumB = groupSum(b[1]);
-                return currentSort === "price-desc" ? sumB - sumA : sumA - sumB;
+                return currentSort.includes("desc") ? sumB - sumA : sumA - sumB;
             });
         }
 
@@ -1018,6 +1203,7 @@ const App = (() => {
         $$(".theme-option").forEach(btn => {
             btn.classList.toggle("active", btn.dataset.theme === theme);
         });
+        updateUrl();
     }
 
     function applyTheme(theme) {
@@ -1183,6 +1369,7 @@ const App = (() => {
 
     async function init() {
         await loadConfig();
+        applyUrlSettingsEarly();
 
         const savedTheme = localStorage.getItem("theme") || config.theme || "system";
         applyTheme(savedTheme);
@@ -1209,6 +1396,7 @@ const App = (() => {
                 if (currentDetailItem) {
                     $("#detail-content").innerHTML = buildDetailHtml(currentDetailItem);
                 }
+                updateUrl();
             });
         });
         $("#settings-exchange-rate").addEventListener("change", (e) => {
@@ -1217,6 +1405,7 @@ const App = (() => {
                 exchangeRate = val;
                 localStorage.setItem("exchangeRate", val);
                 if (cachedResults) reapplyFilters();
+                updateUrl();
             }
         });
 
@@ -1251,6 +1440,7 @@ const App = (() => {
                 if (cachedResults) {
                     reapplyFilters();
                 }
+                updateUrl();
             });
         });
 
@@ -1262,6 +1452,7 @@ const App = (() => {
             $("#exact-toggle").setAttribute("aria-pressed", String(exactMatch));
             const query = $("#search-input").value.trim();
             if (query) performSearch(query);
+            updateUrl();
         });
 
         // Filter button
@@ -1284,6 +1475,7 @@ const App = (() => {
                 }
                 updateFilterBadge();
                 if (cachedResults) reapplyFilters();
+                updateUrl();
             });
         });
 
@@ -1301,6 +1493,7 @@ const App = (() => {
                 }
                 updateFilterBadge();
                 if (cachedResults) reapplyFilters();
+                updateUrl();
             });
         });
 
@@ -1316,6 +1509,7 @@ const App = (() => {
             }
             updateFilterBadge();
             if (cachedResults) reapplyFilters();
+            updateUrl();
         });
         outsourceHideAll.addEventListener("change", function () {
             if (this.checked) {
@@ -1326,6 +1520,7 @@ const App = (() => {
             }
             updateFilterBadge();
             if (cachedResults) reapplyFilters();
+            updateUrl();
         });
 
         // Currency filter (mutually exclusive)
@@ -1340,6 +1535,7 @@ const App = (() => {
             }
             updateFilterBadge();
             if (cachedResults) reapplyFilters();
+            updateUrl();
         });
         currFilterUsd.addEventListener("change", function () {
             if (this.checked) {
@@ -1350,6 +1546,7 @@ const App = (() => {
             }
             updateFilterBadge();
             if (cachedResults) reapplyFilters();
+            updateUrl();
         });
 
         // Group by options
@@ -1360,6 +1557,7 @@ const App = (() => {
                 groupBy = btn.dataset.group === "none" ? null : btn.dataset.group;
                 updateFilterBadge();
                 if (cachedResults) reapplyFilters();
+                updateUrl();
             });
         });
 
