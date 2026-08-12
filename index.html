@@ -28,11 +28,14 @@
             <!-- Search Area -->
             <div class="search-area">
                 <img src="img/mineski_logo.svg" alt="" class="search-logo">
-                <div class="search-box">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <div class="search-box" id="search-box">
+                    <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
                     </svg>
-                    <input type="text" class="search-input" id="search-input" placeholder="Search procurement orders..." autocomplete="off" spellcheck="false">
+                    <div class="search-field" id="search-field">
+                        <div class="search-chips" id="search-chips"></div>
+                        <input type="text" class="search-input" id="search-input" placeholder="Search procurement orders..." autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="slash-dropdown">
+                    </div>
                     <button class="search-clear" id="search-clear" title="Clear search">
                         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
                             <path d="M18 6 6 18M6 6l12 12"/>
@@ -44,6 +47,7 @@
                         </svg>
                         <span>Exact</span>
                     </button>
+                    <div class="slash-dropdown" id="slash-dropdown" role="listbox" style="display:none"></div>
                 </div>
                 <div class="stats">
                     <span><strong id="stat-records">0</strong> records</span>
@@ -109,6 +113,18 @@
                             <button class="filter-option" data-group="Supplier Details_Supplier Name">Supplier</button>
                         </div>
                     </div>
+                    <div class="filter-section filter-section-last" id="filter-chips-section">
+                        <div class="filter-section-title">Add Field Filter</div>
+                        <div class="filter-options filter-field-buttons" id="filter-field-buttons">
+                            <button class="filter-option field-add" data-add-field="particular_item">particular_item</button>
+                            <button class="filter-option field-add" data-add-field="business_unit">business_unit</button>
+                            <button class="filter-option field-add" data-add-field="project_name">project_name</button>
+                            <button class="filter-option field-add" data-add-field="project_code">project_code</button>
+                            <button class="filter-option field-add" data-add-field="project_manager">project_manager</button>
+                            <button class="filter-option field-add" data-add-field="supplier_account_name">supplier_account_name</button>
+                        </div>
+                        <div class="filter-hint">Starts a filter and drops the cursor in for you to type a value.</div>
+                    </div>
                 </div>
             </div>
 
@@ -141,6 +157,27 @@
         </aside>
     </div>
 
+    <!-- Filter sheet backdrop (mobile) -->
+    <div class="filter-backdrop" id="filter-backdrop"></div>
+
+    <!-- Live data status toast (bottom centre) -->
+    <div class="live-toast" id="live-toast" role="status" aria-live="polite">
+        <div class="live-toast-spinner" id="live-toast-spinner"></div>
+        <svg class="live-toast-icon" id="live-toast-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20 6 9 17l-5-5"/>
+        </svg>
+        <span class="live-toast-text" id="live-toast-text">Fetching latest data…</span>
+        <div class="live-toast-actions" id="live-toast-actions" style="display:none">
+            <button class="live-toast-btn primary" id="live-toast-reload">Reload</button>
+            <button class="live-toast-btn" id="live-toast-dismiss">Dismiss</button>
+        </div>
+        <button class="live-toast-close" id="live-toast-x" title="Dismiss" aria-label="Dismiss">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M18 6 6 18M6 6l12 12"/>
+            </svg>
+        </button>
+    </div>
+
     <!-- Password Modal -->
     <div class="modal-overlay" id="modal-overlay"></div>
     <div class="modal" id="password-modal">
@@ -159,6 +196,85 @@
         <div class="modal-progress" id="modal-progress">
             <div class="modal-progress-track"><div class="modal-progress-bar" id="modal-progress-bar"></div></div>
             <div class="modal-progress-label" id="modal-progress-label">0%</div>
+        </div>
+    </div>
+
+    <!-- Search Help Modal -->
+    <div class="modal help-modal" id="help-modal">
+        <div class="help-modal-head">
+            <div class="modal-title">Search Features</div>
+            <button class="icon-btn" id="help-close" title="Close">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M18 6 6 18M6 6l12 12"/>
+                </svg>
+            </button>
+        </div>
+        <div class="help-body">
+            <div class="help-group">
+                <div class="help-group-title">Basic Search</div>
+                <div class="help-row"><code>lighting rental</code><span>Matches records containing either word. Best matches rank first.</span></div>
+                <div class="help-row"><code>"exact phrase"</code><span>Double quotes require the whole phrase to appear.</span></div>
+                <div class="help-row"><code>-word</code><span>Excludes records containing that word.</span></div>
+                <div class="help-row"><code>-"phrase here"</code><span>Excludes records containing that phrase.</span></div>
+                <div class="help-row"><code>Exact</code><span>The toggle in the search bar restricts results to literal substring matches. Turns on automatically for request numbers and project codes.</span></div>
+            </div>
+
+            <div class="help-group">
+                <div class="help-group-title">Field Filters &mdash; type <code>/</code></div>
+                <p class="help-note">Type <code>/</code> in the search bar to pick a field, then enter a value. Filters become chips and can be combined with each other and with normal search text.</p>
+                <div class="help-row"><code>project_code:'2026TEG'</code><span>Single quotes &mdash; matches if the field <em>contains</em> the text.</span></div>
+                <div class="help-row"><code>project_code:"2026TEG-P0290"</code><span>Double quotes &mdash; the field must match <em>exactly</em>.</span></div>
+                <div class="help-row"><span class="help-lbl">Custom values</span><span>Suggestions only appear once you start typing &mdash; any text works, not just a suggested value.</span></div>
+                <div class="help-row"><span class="help-lbl">Click a chip</span><span>Turns it off without deleting it (goes grey). Click again to turn it back on.</span></div>
+                <div class="help-row"><span class="help-lbl">Double-click a chip</span><span>Edits its value.</span></div>
+                <div class="help-row"><span class="help-lbl">Filter menu</span><span>The filter menu lists every field under &ldquo;Add Field Filter&rdquo; &mdash; click one to start that filter with the cursor already in the chip.</span></div>
+                <div class="help-row"><span class="help-lbl">Type filters</span><span>You can also type <code>field:'value'</code> tokens directly and press Enter to turn them into chips.</span></div>
+                <div class="help-note">Available fields:</div>
+                <div class="help-fields">
+                    <code>particular_item</code><code>business_unit</code><code>project_name</code><code>project_code</code><code>project_manager</code><code>supplier_account_name</code>
+                </div>
+            </div>
+
+            <div class="help-group">
+                <div class="help-group-title">Filters &amp; Sort</div>
+                <div class="help-row"><span class="help-lbl">Tabs</span><span>Narrow matching to Particulars, Suppliers, or Projects.</span></div>
+                <div class="help-row"><span class="help-lbl">Filter button</span><span>Sort by date, price, unit price, or project code. Filter by status, outsourcing, and currency. Group results by business unit, project, or supplier.</span></div>
+                <div class="help-row"><span class="help-lbl">Status</span><span>Only Approved is shown by default.</span></div>
+            </div>
+
+            <div class="help-group">
+                <div class="help-group-title">Shareable Links</div>
+                <p class="help-note">Search terms, filters, sorting, and display settings are written into the address bar as you change them &mdash; copy the URL to share the exact view.</p>
+                <div class="help-row"><code>?q=</code><span>Search terms, including field filters.</span></div>
+                <div class="help-row"><code>?exact=</code><span><code>true</code> or <code>false</code>.</span></div>
+                <div class="help-row"><code>?tab=</code><span><code>all</code>, <code>particulars</code>, <code>suppliers</code>, <code>projects</code>.</span></div>
+                <div class="help-row"><code>?sort=</code><span><code>dateasc</code>, <code>datedesc</code>, <code>priceasc</code>, <code>pricedesc</code>, <code>projaz</code>, <code>projza</code>.</span></div>
+                <div class="help-row"><code>?status=</code><span>Comma separated: <code>approved,under review,recalled,rejected</code>.</span></div>
+                <div class="help-row"><code>?outsource=</code><span><code>show</code> or <code>hide</code>.</span></div>
+                <div class="help-row"><code>?currency=</code><span><code>php</code> or <code>usd</code>.</span></div>
+                <div class="help-row"><code>?group=</code><span><code>none</code>, <code>business unit</code>, <code>project</code>, <code>supplier</code>.</span></div>
+                <div class="help-row"><code>?theme=</code><span><code>system</code>, <code>light</code>, <code>dark</code>.</span></div>
+                <div class="help-row"><code>?exchangerate=</code><span>PHP per 1 USD, e.g. <code>57</code>.</span></div>
+                <div class="help-row"><code>?showprice=</code><span><code>default</code>, <code>php</code>, <code>usd</code>.</span></div>
+                <div class="help-row"><code>?qoff=</code><span>Field filters that are present but switched off.</span></div>
+            </div>
+
+            <div class="help-group">
+                <div class="help-group-title">Live Data</div>
+                <p class="help-note">The page opens on the bundled database, then checks the Lark base for newer records in the background. A bar appears at the bottom when it finishes &mdash; nothing is replaced until you choose <b>Reload</b>, so a search in progress is never disturbed.</p>
+                <div class="help-row"><span class="help-lbl">Fetching…</span><span>The background read is still running. Large tables are read in pages.</span></div>
+                <div class="help-row"><span class="help-lbl">Reload</span><span>Swaps in the fetched records and rebuilds the search index. Your current search is re-run against the new data.</span></div>
+                <div class="help-row"><span class="help-lbl">Dismiss</span><span>Keeps the bundled database. Reopen the page to check again.</span></div>
+                <div class="help-note">If the fetch fails or returns a short read, the bar says so rather than quietly showing partial data.</div>
+            </div>
+
+            <div class="help-group">
+                <div class="help-group-title">Keyboard</div>
+                <div class="help-row"><span class="help-lbl">&uarr; &darr;</span><span>Move through the field-filter list.</span></div>
+                <div class="help-row"><span class="help-lbl">Enter</span><span>Select the highlighted filter, or commit a filter value.</span></div>
+                <div class="help-row"><span class="help-lbl">Backspace</span><span>With an empty search bar, removes the last chip.</span></div>
+                <div class="help-row"><span class="help-lbl">Esc</span><span>Closes the filter list, the detail panel, or clears the search bar.</span></div>
+            </div>
         </div>
     </div>
 
@@ -181,6 +297,16 @@
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M18 6 6 18M6 6l12 12"/>
                 </svg>
+            </button>
+        </div>
+
+        <!-- Search Help Section -->
+        <div class="settings-section">
+            <button class="help-btn" id="search-help-btn">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                </svg>
+                <span>Search Features &amp; Syntax</span>
             </button>
         </div>
 
@@ -246,6 +372,7 @@
 
     <!-- App Scripts -->
     <script src="js/crypto.js"></script>
+    <script src="js/lark.js"></script>
     <script src="js/search.js"></script>
     <script src="js/app.js"></script>
 </body>

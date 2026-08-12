@@ -26,6 +26,7 @@ const App = (() => {
     let groupBy = null;
     let cachedResults = null;
     let cachedQuery = "";
+    let cachedHighlight = "";
     let exchangeRate = 57;
     let currencyDisplay = null; // null | "PHP" | "USD"
     let currentDetailItem = null;
@@ -85,8 +86,12 @@ const App = (() => {
     function buildQueryString() {
         const p = new URLSearchParams();
         if (urlDebugKey) p.set("debugkey", urlDebugKey);
-        const q = $("#search-input").value.trim();
+        const q = getFullQuery();
         if (q) p.set("q", q);
+        // Disabled chips are kept out of q (which must stay a valid query) and
+        // carried separately so a shared link restores them still switched off.
+        const off = activeFilters.filter(f => f.disabled).map(filterToText).join(" ");
+        if (off) p.set("qoff", off);
         if (exactMatch) p.set("exact", "true");
         if (activeTab && activeTab !== "all") p.set("tab", activeTab);
         if (currentSort && SORT_TO_URL[currentSort]) p.set("sort", SORT_TO_URL[currentSort]);
@@ -194,17 +199,25 @@ const App = (() => {
 
         updateFilterBadge();
 
-        if (params.has("q")) {
-            const q = params.get("q");
-            $("#search-input").value = q;
-            if (!params.has("exact") && detectExactPattern(q.trim())) {
+        if (params.has("q") || params.has("qoff")) {
+            const q = params.get("q") || "";
+            // Split field:'value' tokens into chips, leave the rest as free text
+            const { fieldFilters, rest } = Search.parseFieldFilters(q);
+            const chips = fieldFilters.map(f => ({ field: f.field, value: f.value, exact: f.exact, disabled: false }));
+            if (params.has("qoff")) {
+                const off = Search.parseFieldFilters(params.get("qoff")).fieldFilters;
+                off.forEach(f => chips.push({ field: f.field, value: f.value, exact: f.exact, disabled: true }));
+            }
+            setSearchState(chips, rest);
+            if (!params.has("exact") && rest && detectExactPattern(rest)) {
                 autoExact = true;
                 exactMatch = true;
                 $("#exact-toggle").setAttribute("aria-pressed", "true");
             }
-            if (q.trim()) {
+            const full = getFullQuery();
+            if (full) {
                 hideCarousel();
-                await performSearch(q.trim());
+                await performSearch(full, getHighlightText());
             }
         }
         } finally {
@@ -457,6 +470,119 @@ const App = (() => {
 
         // Apply URL search/filter/tab state now that data + UI are ready
         await applyUrlStateLate();
+
+        // Then go looking for fresher data in the background
+        startLiveFetch();
+    }
+
+    // --- Live data (Lark) ---
+    let liveResult = null;      // { result, meta } once a fetch succeeds
+    let liveFetching = false;
+
+    function showToast(text, state, withActions) {
+        const el = $("#live-toast");
+        $("#live-toast-text").textContent = text;
+        el.classList.remove("done", "error");
+        if (state) el.classList.add(state);
+        $("#live-toast-actions").style.display = withActions ? "" : "none";
+        el.classList.add("visible");
+    }
+
+    function hideToast() {
+        $("#live-toast").classList.remove("visible");
+    }
+
+    // The toast is bottom-fixed and would sit on top of the filter sheet,
+    // settings, or a modal. Suppress it (via a body class the CSS keys off)
+    // whenever one of those is open, so it never blocks their controls.
+    function syncOverlayState() {
+        const blocking =
+            $("#filter-popover").style.display !== "none" ||
+            $("#settings-panel").classList.contains("open") ||
+            $("#help-modal").classList.contains("visible");
+        document.body.classList.toggle("overlay-open", blocking);
+    }
+
+    // Kicks off while the user is already working against the bundled database.
+    // Deliberately never blocks the UI and never replaces data on its own — a
+    // swap mid-search would be hostile, so it only offers.
+    async function startLiveFetch() {
+        if (liveFetching) return;
+        if (!config.larkAutoFetch || !Lark.isConfigured(config)) return;
+
+        liveFetching = true;
+        showToast("Fetching latest data…", null, false);
+
+        try {
+            const { result, meta } = await Lark.fetchAll(config, ({ records }) => {
+                showToast("Fetching latest data… " + records.toLocaleString() + " records", null, false);
+            });
+
+            liveResult = { result, meta };
+            const n = result.data.length;
+
+            // Report a short read rather than presenting it as the full table
+            if (meta.stoppedEarly) {
+                showToast("Fetched " + n.toLocaleString() + " records but stopped early ("
+                    + meta.stoppedEarly + "). Reload anyway?", "error", true);
+            } else if (meta.countMismatch) {
+                showToast("Latest data ready — " + meta.countMismatch
+                    + " (table changed while reading). Reload database?", "done", true);
+            } else {
+                const delta = n - db.length;
+                const diff = delta === 0 ? "same record count"
+                    : (delta > 0 ? "+" + delta.toLocaleString() + " records" : delta.toLocaleString() + " records");
+                showToast("Latest data ready — " + n.toLocaleString() + " records (" + diff + "). Reload database?", "done", true);
+            }
+        } catch (e) {
+            console.error("Lark fetch failed:", e);
+            showToast("Couldn't fetch latest data: " + e.message, "error", false);
+        } finally {
+            liveFetching = false;
+        }
+    }
+
+    // Swap in the fetched records and rebuild everything that derives from db
+    async function applyLiveData() {
+        if (!liveResult) return;
+        const { result } = liveResult;
+
+        const missing = REQUIRED_COLUMNS.filter(c => !result.meta.fields.includes(c));
+        if (missing.length > 0) {
+            showToast("Live data is missing columns: " + missing.join(", "), "error", false);
+            return;
+        }
+
+        showToast("Loading latest data…", null, false);
+        headers = result.meta.fields;
+        db = result.data.filter(row => Object.values(row).some(v => v && v.trim && v.trim() !== ""));
+
+        try {
+            await Search.init(db, headers, () => {});
+        } catch (e) {
+            console.error("Rebuilding the index for live data failed:", e);
+            showToast("Failed to index latest data: " + e.message, "error", false);
+            return;
+        }
+
+        // Anything cached from the old dataset is now stale
+        cachedResults = null;
+        cachedQuery = "";
+        cachedHighlight = "";
+        liveResult = null;
+
+        updateStats();
+        renderCarousel();
+
+        const full = getFullQuery();
+        if (full) {
+            await performSearch(full, getHighlightText());
+        } else {
+            clearResults();
+        }
+
+        showToast("Database updated — " + db.length.toLocaleString() + " records.", "done", false);
+        setTimeout(hideToast, 4000);
     }
 
     function updateStats() {
@@ -661,9 +787,386 @@ const App = (() => {
         return false;
     }
 
+    // --- Slash Filters ---
+    const FIELD_LABELS = {
+        particular_item: "Item name on the request",
+        business_unit: "Owning business unit",
+        project_name: "Project name",
+        project_code: "Project code",
+        project_manager: "Project manager",
+        supplier_account_name: "Supplier account name",
+    };
+
+    let activeFilters = [];     // committed chips: {field, value, exact, disabled}
+    let pendingField = null;    // field awaiting its value
+    let slashOpen = false;
+    let slashItems = [];        // [{type:"field"|"value", name, desc, value}]
+    let slashIndex = 0;
+
+    // Trailing "/token" the user is currently typing
+    const SLASH_RE = /(?:^|\s)\/([a-z_]*)$/i;
+    // A complete field:'value' / field:"value" token anywhere in the text
+    const TOKEN_RE = /([a-z_]+):(['"])(.*?)\2/gi;
+
+    function filterToText(f) {
+        const q = f.exact ? '"' : "'";
+        return `${f.field}:${q}${f.value}${q}`;
+    }
+
+    // Only enabled chips take part in the search
+    function chipsToText() {
+        return activeFilters.filter(f => !f.disabled).map(filterToText).join(" ");
+    }
+
+    // Free text with any in-progress slash command stripped out
+    function getFreeText() {
+        if (pendingField) return "";
+        return $("#search-input").value.replace(SLASH_RE, "").trim();
+    }
+
+    // What actually gets searched: chips + free text
+    function getFullQuery() {
+        return [chipsToText(), getFreeText()].filter(Boolean).join(" ");
+    }
+
+    // Terms to highlight in results — chip values, but not field names
+    function getHighlightText() {
+        return [...activeFilters.filter(f => !f.disabled).map(f => f.value), getFreeText()]
+            .filter(Boolean).join(" ");
+    }
+
+    function renderChips() {
+        const box = $("#search-chips");
+        const field = $("#search-field");
+        const input = $("#search-input");
+
+        // Preserve caret/focus across the DOM shuffle below.
+        const hadFocus = document.activeElement === input;
+        const selStart = input.selectionStart, selEnd = input.selectionEnd;
+
+        // The real input may currently live inside a pending chip. Move it back
+        // to its home first so clearing the chip HTML can never destroy it.
+        field.appendChild(input);
+        box.innerHTML = "";
+
+        activeFilters.forEach((f, i) => {
+            const quote = f.exact ? '"' : "'";
+            const chip = document.createElement("span");
+            chip.className = "search-chip"
+                + (f.exact ? " exact" : "")
+                + (f.disabled ? " disabled" : "");
+            chip.dataset.index = i;
+            chip.title = (f.disabled ? "Disabled — click to enable" : "Click to disable")
+                + " · double-click to edit"
+                + (f.exact ? " · exact match" : " · contains");
+            chip.innerHTML = `
+                <span class="search-chip-field">${esc(f.field)}:</span>
+                <span class="search-chip-val">${esc(quote + f.value + quote)}</span>
+                <button class="search-chip-x" title="Remove filter" aria-label="Remove ${esc(f.field)} filter">
+                    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M18 6 6 18M6 6l12 12"/>
+                    </svg>
+                </button>`;
+            box.appendChild(chip);
+        });
+
+        // While a field is pending, the real input is relocated *inside* the
+        // pending chip, between its quotes — so the user types directly into the
+        // chip as if it were its own text box.
+        if (pendingField) {
+            const chip = document.createElement("span");
+            chip.className = "search-chip pending";
+            chip.innerHTML = `<span class="search-chip-field">${esc(pendingField)}:</span>`
+                + `<span class="search-chip-quote">'</span>`;
+            const close = document.createElement("span");
+            close.className = "search-chip-quote";
+            close.textContent = "'";
+            // Always-present × so it's clear the pending filter can be cancelled.
+            const cancelBtn = document.createElement("button");
+            cancelBtn.className = "search-chip-x";
+            cancelBtn.title = "Cancel filter";
+            cancelBtn.setAttribute("aria-label", "Cancel filter");
+            cancelBtn.innerHTML = `<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>`;
+            cancelBtn.addEventListener("mousedown", (e) => {
+                e.preventDefault();     // don't steal focus / trigger the chip's focus handler
+                e.stopPropagation();
+                cancelPending();
+            });
+            chip.appendChild(input);      // move the live input into the chip
+            chip.appendChild(close);
+            chip.appendChild(cancelBtn);
+            box.appendChild(chip);
+            input.classList.add("in-chip");
+            input.placeholder = "";
+            // Clicking the chip (but not the ×) drops the caret into the input.
+            chip.addEventListener("mousedown", (e) => {
+                if (e.target.closest(".search-chip-x")) return;
+                if (e.target !== input) {
+                    e.preventDefault();
+                    input.focus();
+                    const end = input.value.length;
+                    input.setSelectionRange(end, end);
+                }
+            });
+            autoSizeChipInput();
+        } else {
+            input.classList.remove("in-chip");
+            input.removeAttribute("size");
+            input.style.width = "";
+            input.placeholder = "Search procurement orders…";
+        }
+
+        if (hadFocus) {
+            input.focus();
+            try { input.setSelectionRange(selStart, selEnd); } catch { /* value shorter now */ }
+        }
+
+        updateClearVisibility();
+    }
+
+    // Size the in-chip input to the exact pixel width of its text so the caret
+    // sits right after the last character — no trailing gap before the closing
+    // quote. Measured with a hidden span using the input's own font metrics,
+    // since `size` (character units) overestimates in a proportional font.
+    let chipSizer = null;
+    function autoSizeChipInput() {
+        const input = $("#search-input");
+        if (!input.classList.contains("in-chip")) return;
+        if (!chipSizer) {
+            chipSizer = document.createElement("span");
+            chipSizer.setAttribute("aria-hidden", "true");
+            chipSizer.style.cssText = "position:absolute;left:-9999px;top:-9999px;white-space:pre;visibility:hidden;";
+            document.body.appendChild(chipSizer);
+        }
+        const cs = getComputedStyle(input);
+        chipSizer.style.fontFamily = cs.fontFamily;
+        chipSizer.style.fontSize = cs.fontSize;
+        chipSizer.style.fontWeight = cs.fontWeight;
+        chipSizer.style.fontStyle = cs.fontStyle;
+        chipSizer.style.letterSpacing = cs.letterSpacing;
+        chipSizer.textContent = input.value || "";
+        const w = chipSizer.getBoundingClientRect().width;
+        // +1px so the caret has room; min a few px so an empty field still shows one
+        input.style.width = Math.max(4, Math.ceil(w) + 1) + "px";
+    }
+
+    function updateClearVisibility() {
+        const hasContent = !!$("#search-input").value || activeFilters.length > 0 || !!pendingField;
+        $("#search-box").classList.toggle("has-content", hasContent);
+    }
+
+    function commitChip(field, rawValue, exactOverride) {
+        let value = rawValue.trim();
+        let exact = false;
+        // Let the user type their own quotes to choose the match mode
+        const m = value.match(/^(['"])([\s\S]*)\1$/);
+        if (m) {
+            exact = m[1] === '"';
+            value = m[2].trim();
+        }
+        if (exactOverride !== undefined) exact = exactOverride;
+        if (!value) return false;
+        activeFilters.push({ field, value, exact, disabled: false });
+        return true;
+    }
+
+    // Turn any complete field:'value' tokens typed into the bar into chips.
+    // This is what makes the "edit as text" round trip work: the user edits raw
+    // text, and on commit it collapses back into chips.
+    function absorbTypedTokens() {
+        const input = $("#search-input");
+        if (pendingField) return false;
+        const fields = Search.getFilterFields();
+        let found = false;
+        const rest = input.value.replace(TOKEN_RE, (match, name, quote, value) => {
+            const key = name.toLowerCase();
+            if (!fields[key]) return match;         // unknown field stays as text
+            if (!value.trim()) return " ";          // empty token just disappears
+            activeFilters.push({ field: key, value: value.trim(), exact: quote === '"', disabled: false });
+            found = true;
+            return " ";
+        });
+        if (found) {
+            input.value = rest.replace(/\s+/g, " ").trim();
+            renderChips();
+        }
+        return found;
+    }
+
+    // Start a field filter from the filter menu: opens an empty pending chip
+    // for that field and drops the caret inside it, ready to type a value.
+    function startFieldFilter(field) {
+        if (!Search.getFilterFields()[field]) return;
+        // If a value is already being entered, keep it as this field's value;
+        // otherwise start empty.
+        const input = $("#search-input");
+        pendingField = field;
+        closeFilterPopover();
+        renderChips();          // relocates the input into the new pending chip
+        input.focus();
+        const end = input.value.length;
+        input.setSelectionRange(end, end);
+        autoSizeChipInput();
+        refreshSlashState();    // show value suggestions if there's already text
+    }
+
+    function closeSlash() {
+        slashOpen = false;
+        slashItems = [];
+        slashIndex = 0;
+        $("#slash-dropdown").style.display = "none";
+        $("#search-input").setAttribute("aria-expanded", "false");
+    }
+
+    function renderSlash() {
+        const dd = $("#slash-dropdown");
+        if (slashItems.length === 0) {
+            dd.innerHTML = `<div class="slash-empty">No matching filter</div>`;
+            dd.style.display = "";
+            return;
+        }
+        const hint = pendingField
+            ? `Values for ${pendingField} &mdash; or type your own`
+            : "Filter by field";
+        dd.innerHTML = `<div class="slash-hint">${hint}</div>` + slashItems.map((it, i) => {
+            const active = i === slashIndex ? " active" : "";
+            const label = it.type === "field" ? it.name : it.value;
+            const desc = it.type === "field" ? it.desc : "";
+            return `<div class="slash-item${active}" role="option" data-index="${i}" aria-selected="${i === slashIndex}">
+                <span class="slash-item-name">${esc(label)}</span>
+                ${desc ? `<span class="slash-item-desc">${esc(desc)}</span>` : ""}
+            </div>`;
+        }).join("");
+        dd.style.display = "";
+        $("#search-input").setAttribute("aria-expanded", "true");
+        slashOpen = true;
+        const activeEl = dd.querySelector(".slash-item.active");
+        if (activeEl) activeEl.scrollIntoView({ block: "nearest" });
+    }
+
+    function openFieldList(prefix) {
+        const fields = Object.keys(Search.getFilterFields());
+        const p = prefix.toLowerCase();
+        slashItems = fields
+            .filter(f => f.includes(p))
+            .map(f => ({ type: "field", name: f, desc: FIELD_LABELS[f] || "" }));
+        slashIndex = 0;
+        renderSlash();
+    }
+
+    // Suggestions stay hidden until something is typed, so it reads as "type a
+    // value" rather than "pick one of these".
+    function openValueList(field, prefix) {
+        if (!prefix) { closeSlash(); return; }
+        const values = Search.getFieldValues(field, prefix, 8);
+        slashItems = values.map(v => ({ type: "value", value: v }));
+        slashIndex = 0;
+        if (slashItems.length === 0) { closeSlash(); return; }
+        renderSlash();
+    }
+
+    function selectSlashItem(i) {
+        const it = slashItems[i];
+        if (!it) return;
+        const input = $("#search-input");
+
+        if (it.type === "field") {
+            // Drop the "/token" text, switch to value entry for this field
+            input.value = input.value.replace(SLASH_RE, "").trimStart();
+            pendingField = it.name;
+            input.placeholder = `Value for ${it.name}…`;
+            renderChips();
+            closeSlash();   // nothing typed yet, so no suggestions
+            input.focus();
+        } else {
+            // Picked a concrete value → commit the chip
+            if (pendingField && commitChip(pendingField, it.value)) {
+                pendingField = null;
+                input.value = "";
+                input.placeholder = "Search procurement orders…";
+                renderChips();
+                closeSlash();
+                input.focus();
+                runSearch();
+            }
+        }
+    }
+
+    function cancelPending() {
+        pendingField = null;
+        const input = $("#search-input");
+        input.value = "";                 // discard the half-typed value
+        input.placeholder = "Search procurement orders…";
+        renderChips();
+        closeSlash();
+        runSearch();                       // reflect the remaining committed chips
+    }
+
+    // Decide whether the dropdown should be showing, based on current input
+    function refreshSlashState() {
+        const input = $("#search-input");
+        const m = input.value.match(SLASH_RE);
+
+        if (pendingField) {
+            openValueList(pendingField, input.value.trim());
+            return;
+        }
+        if (m) {
+            openFieldList(m[1]);
+            return;
+        }
+        closeSlash();
+    }
+
+    function setSearchState(filters, freeText) {
+        activeFilters = Array.isArray(filters) ? filters : [];
+        pendingField = null;
+        $("#search-input").value = freeText || "";
+        $("#search-input").placeholder = "Search procurement orders…";
+        renderChips();
+        closeSlash();
+    }
+
+    function clearSearchState() {
+        activeFilters = [];
+        pendingField = null;
+        const input = $("#search-input");
+        input.value = "";
+        input.placeholder = "Search procurement orders…";
+        renderChips();
+        closeSlash();
+    }
+
     // --- Search UI ---
+    // Runs a search from the current chip + free-text state
+    function runSearch() {
+        const full = getFullQuery();
+        if (!full) {
+            clearResults();
+            return;
+        }
+
+        // Auto-exact detection applies to free text only
+        const free = getFreeText();
+        const shouldAutoExact = free ? detectExactPattern(free) : false;
+        if (shouldAutoExact && !userExact) {
+            autoExact = true;
+            exactMatch = true;
+            $("#exact-toggle").setAttribute("aria-pressed", "true");
+        } else if (!shouldAutoExact && autoExact) {
+            autoExact = false;
+            exactMatch = userExact;
+            $("#exact-toggle").setAttribute("aria-pressed", String(exactMatch));
+        }
+
+        hideCarousel();
+        performSearch(full, getHighlightText());
+        updateUrl();
+    }
+
     function onSearchInput() {
         clearTimeout(searchTimeout);
+        updateClearVisibility();
         if (godmodeActive) {
             const q = $("#search-input").value.trim();
             if (q.toLowerCase() !== godmodeString.toLowerCase()) {
@@ -671,32 +1174,18 @@ const App = (() => {
             }
         }
 
-        searchTimeout = setTimeout(() => {
-            const query = $("#search-input").value.trim();
-            if (!query) {
-                clearResults();
-                return;
-            }
+        refreshSlashState();
 
-            // Auto-exact detection
-            const shouldAutoExact = detectExactPattern(query);
-            if (shouldAutoExact && !userExact) {
-                autoExact = true;
-                exactMatch = true;
-                $("#exact-toggle").setAttribute("aria-pressed", "true");
-            } else if (!shouldAutoExact && autoExact) {
-                autoExact = false;
-                exactMatch = userExact;
-                $("#exact-toggle").setAttribute("aria-pressed", String(exactMatch));
-            }
+        // While a value is being entered, the text lives inside the pending
+        // chip's own input — just grow it to fit. No re-render, so the caret and
+        // focus are never disturbed mid-type.
+        if (pendingField) { autoSizeChipInput(); return; }
+        if (slashOpen) return;
 
-            hideCarousel();
-            performSearch(query);
-            updateUrl();
-        }, 200);
+        searchTimeout = setTimeout(runSearch, 200);
     }
 
-    async function performSearch(query) {
+    async function performSearch(query, highlightText) {
         const tabs = ["all", "particulars", "suppliers", "projects"];
         const allResults = await Promise.all(
             tabs.map(tab => Search.search(query, { tab, exact: exactMatch, limit: 500 }))
@@ -704,10 +1193,11 @@ const App = (() => {
 
         cachedResults = allResults;
         cachedQuery = query;
+        cachedHighlight = highlightText !== undefined ? highlightText : query;
 
         const activeIdx = tabs.indexOf(activeTab);
         const filtered = applyFiltersAndSort(allResults[activeIdx]);
-        renderResults(filtered, query);
+        renderResults(filtered, cachedHighlight);
 
         // Update badges with filtered counts
         tabs.forEach((tab, i) => {
@@ -728,7 +1218,7 @@ const App = (() => {
         const tabs = ["all", "particulars", "suppliers", "projects"];
         const activeIdx = tabs.indexOf(activeTab);
         const filtered = applyFiltersAndSort(cachedResults[activeIdx]);
-        renderResults(filtered, cachedQuery);
+        renderResults(filtered, cachedHighlight);
 
         tabs.forEach((tab, i) => {
             const badge = $(`.search-tab[data-tab="${tab}"] .tab-badge`);
@@ -822,6 +1312,7 @@ const App = (() => {
         $$(".tab-badge").forEach(b => b.style.display = "none");
         cachedResults = null;
         cachedQuery = "";
+        cachedHighlight = "";
         showCarousel();
         updateUrl();
     }
@@ -1173,15 +1664,52 @@ const App = (() => {
     // --- Filter Popover ---
     function toggleFilterPopover() {
         const pop = $("#filter-popover");
-        const btn = $("#filter-btn");
         const isOpen = pop.style.display !== "none";
-        pop.style.display = isOpen ? "none" : "";
-        btn.classList.toggle("active", !isOpen);
+        if (isOpen) { closeFilterPopover(); return; }
+        pop.style.display = "";
+        pop.scrollTop = 0;
+        $("#filter-btn").classList.add("active");
+        $("#filter-backdrop").classList.add("visible");
+        fitFilterPopover();
+        syncOverlayState();
+    }
+
+    // As a dropdown its top depends on how tall the search area currently is
+    // (chips wrap), so cap its height from the measured position rather than a
+    // fixed calc(). The mobile bottom sheet is anchored to the bottom edge and
+    // keeps the max-height from CSS.
+    function fitFilterPopover() {
+        const pop = $("#filter-popover");
+        if (pop.style.display === "none") return;
+        pop.style.removeProperty("--pop-max");
+        // Only the desktop dropdown needs measuring; the mobile sheet is
+        // bottom-anchored and its CSS rule ignores --pop-max entirely.
+        if (getComputedStyle(pop).position !== "absolute") return;
+        const top = pop.getBoundingClientRect().top;
+        pop.style.setProperty("--pop-max", Math.max(200, window.innerHeight - top - 16) + "px");
     }
 
     function closeFilterPopover() {
-        $("#filter-popover").style.display = "none";
+        const pop = $("#filter-popover");
+        pop.style.display = "none";
+        pop.style.removeProperty("--pop-max");
         $("#filter-btn").classList.remove("active");
+        $("#filter-backdrop").classList.remove("visible");
+        syncOverlayState();
+    }
+
+    // --- Search Help ---
+    function openHelp() {
+        $("#help-modal").classList.add("visible");
+        $("#modal-overlay").classList.add("visible");
+        $("#help-modal").querySelector(".help-body").scrollTop = 0;
+        syncOverlayState();
+    }
+
+    function closeHelp() {
+        $("#help-modal").classList.remove("visible");
+        $("#modal-overlay").classList.remove("visible");
+        syncOverlayState();
     }
 
     // --- Settings ---
@@ -1190,11 +1718,13 @@ const App = (() => {
         $("#settings-overlay").classList.add("visible");
         const debugPass = getDebugPassword();
         if (debugPass) $("#settings-enc-password").value = debugPass;
+        syncOverlayState();
     }
 
     function closeSettings() {
         $("#settings-panel").classList.remove("open");
         $("#settings-overlay").classList.remove("visible");
+        syncOverlayState();
     }
 
     function setTheme(theme) {
@@ -1338,6 +1868,7 @@ const App = (() => {
         const allItems = db.map(item => ({ item, score: 0 }));
         cachedResults = [allItems, allItems, allItems, allItems];
         cachedQuery = "";
+        cachedHighlight = "";
 
         hideCarousel();
         const filtered = applyFiltersAndSort(allItems);
@@ -1410,24 +1941,170 @@ const App = (() => {
         });
 
         // Search
-        $("#search-input").addEventListener("input", onSearchInput);
-        $("#search-input").addEventListener("keydown", (e) => {
-            if (e.key === "Escape") {
-                $("#search-input").value = "";
-                godmodeActive = false;
-                clearResults();
+        const searchInput = $("#search-input");
+        searchInput.addEventListener("input", onSearchInput);
+        searchInput.addEventListener("keydown", (e) => {
+            // Dropdown navigation takes priority while it's open
+            if (slashOpen && slashItems.length > 0) {
+                if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    slashIndex = (slashIndex + 1) % slashItems.length;
+                    renderSlash();
+                    return;
+                }
+                if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    slashIndex = (slashIndex - 1 + slashItems.length) % slashItems.length;
+                    renderSlash();
+                    return;
+                }
+                if (e.key === "Tab") {
+                    e.preventDefault();
+                    selectSlashItem(slashIndex);
+                    return;
+                }
+                // Enter picks the highlighted field; for values, only when the
+                // input is empty or the user hasn't typed a custom value
+                if (e.key === "Enter" && slashItems[slashIndex]?.type === "field") {
+                    e.preventDefault();
+                    selectSlashItem(slashIndex);
+                    return;
+                }
             }
+
+            if (e.key === "Escape") {
+                if (slashOpen) { closeSlash(); return; }
+                if (pendingField) { cancelPending(); return; }
+                godmodeActive = false;
+                clearSearchState();
+                clearResults();
+                return;
+            }
+
             if (e.key === "Enter") {
-                const q = $("#search-input").value.trim();
+                // Commit the value for a pending field filter
+                if (pendingField) {
+                    e.preventDefault();
+                    const raw = searchInput.value.trim();
+                    if (raw && commitChip(pendingField, raw)) {
+                        pendingField = null;
+                        searchInput.value = "";
+                        searchInput.placeholder = "Search procurement orders…";
+                        renderChips();
+                        closeSlash();
+                        runSearch();
+                    } else if (!raw) {
+                        cancelPending();
+                    }
+                    return;
+                }
+                const q = searchInput.value.trim();
                 if (q.toLowerCase() === godmodeString.toLowerCase()) {
                     e.preventDefault();
                     activateGodmode();
+                    return;
+                }
+                // Collapse any hand-typed field:'value' tokens into chips
+                absorbTypedTokens();
+                // Run immediately rather than waiting on the debounce
+                clearTimeout(searchTimeout);
+                runSearch();
+                return;
+            }
+
+            // Backspace on an empty input peels off the pending/last chip
+            if (e.key === "Backspace" && searchInput.value === "") {
+                if (pendingField) {
+                    e.preventDefault();
+                    cancelPending();
+                    return;
+                }
+                if (activeFilters.length > 0) {
+                    e.preventDefault();
+                    activeFilters.pop();
+                    renderChips();
+                    runSearch();
+                    return;
                 }
             }
         });
+
+        // Chips: click body to disable/enable, double-click to edit, × to remove.
+        // The single-click action is deferred briefly so a double-click can
+        // cancel it, otherwise editing would always toggle first.
+        let chipClickTimer = null;
+        $("#search-chips").addEventListener("click", (e) => {
+            const chip = e.target.closest(".search-chip");
+            if (!chip || chip.classList.contains("pending")) return;
+            const idx = parseInt(chip.dataset.index);
+            if (isNaN(idx) || !activeFilters[idx]) return;
+
+            if (e.target.closest(".search-chip-x")) {
+                clearTimeout(chipClickTimer);
+                activeFilters.splice(idx, 1);
+                renderChips();
+                runSearch();
+                return;
+            }
+            clearTimeout(chipClickTimer);
+            chipClickTimer = setTimeout(() => {
+                if (!activeFilters[idx]) return;
+                activeFilters[idx].disabled = !activeFilters[idx].disabled;
+                renderChips();
+                runSearch();
+            }, 220);
+        });
+
+        // Double-click a chip to edit it: reopens as a pending chip with the
+        // value back in the input.
+        $("#search-chips").addEventListener("dblclick", (e) => {
+            const chip = e.target.closest(".search-chip");
+            if (!chip || chip.classList.contains("pending")) return;
+            const idx = parseInt(chip.dataset.index);
+            if (isNaN(idx) || !activeFilters[idx]) return;
+            clearTimeout(chipClickTimer);
+
+            const f = activeFilters.splice(idx, 1)[0];
+            pendingField = f.field;
+            const input = $("#search-input");
+            input.value = f.value;
+            input.placeholder = `Value for ${f.field}…`;
+            renderChips();
+            closeSlash();
+            input.focus();
+            input.setSelectionRange(input.value.length, input.value.length);
+            runSearch();
+        });
+
+        // Filter popover → one button per field starts that filter with the
+        // caret already in the chip.
+        $("#filter-field-buttons").addEventListener("click", (e) => {
+            const btn = e.target.closest("[data-add-field]");
+            if (btn) startFieldFilter(btn.dataset.addField);
+        });
+
+        // Live data toast
+        $("#live-toast-reload").addEventListener("click", applyLiveData);
+        $("#live-toast-dismiss").addEventListener("click", hideToast);
+        $("#live-toast-x").addEventListener("click", hideToast);
+
+        // Slash dropdown: click to select
+        $("#slash-dropdown").addEventListener("mousedown", (e) => {
+            // mousedown so the input doesn't lose focus first
+            const item = e.target.closest(".slash-item");
+            if (!item) return;
+            e.preventDefault();
+            selectSlashItem(parseInt(item.dataset.index));
+        });
+
+        // Close the dropdown when focus/clicks move elsewhere
+        document.addEventListener("click", (e) => {
+            if (slashOpen && !e.target.closest("#search-box")) closeSlash();
+        });
+
         $("#search-clear").addEventListener("click", () => {
-            $("#search-input").value = "";
             godmodeActive = false;
+            clearSearchState();
             clearResults();
             $("#search-input").focus();
         });
@@ -1450,8 +2127,8 @@ const App = (() => {
             autoExact = false;
             exactMatch = userExact;
             $("#exact-toggle").setAttribute("aria-pressed", String(exactMatch));
-            const query = $("#search-input").value.trim();
-            if (query) performSearch(query);
+            const full = getFullQuery();
+            if (full) performSearch(full, getHighlightText());
             updateUrl();
         });
 
@@ -1601,13 +2278,23 @@ const App = (() => {
             }
         });
         document.addEventListener("keydown", (e) => {
-            if (e.key === "Escape") closeDetail();
+            if (e.key !== "Escape") return;
+            if ($("#help-modal").classList.contains("visible")) { closeHelp(); return; }
+            if ($("#filter-popover").style.display !== "none") { closeFilterPopover(); return; }
+            closeDetail();
         });
 
         // Settings
         $("#settings-btn").addEventListener("click", openSettings);
         $("#settings-close").addEventListener("click", closeSettings);
         $("#settings-overlay").addEventListener("click", closeSettings);
+
+        // Search help
+        $("#search-help-btn").addEventListener("click", openHelp);
+        $("#help-close").addEventListener("click", closeHelp);
+        $("#modal-overlay").addEventListener("click", () => {
+            if ($("#help-modal").classList.contains("visible")) closeHelp();
+        });
         $("#settings-enc-btn").addEventListener("click", handleEncryptFile);
 
         // File input proxy
@@ -1618,6 +2305,10 @@ const App = (() => {
             const file = $("#settings-enc-file").files[0];
             $("#settings-enc-file-name").textContent = file ? file.name : "No file chosen";
         });
+
+        // Keep the filter popover inside the viewport across resize / rotation
+        window.addEventListener("resize", fitFilterPopover);
+        window.addEventListener("orientationchange", fitFilterPopover);
 
         // System theme change listener
         window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {

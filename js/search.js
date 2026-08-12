@@ -33,6 +33,16 @@ const Search = (() => {
         projects: ["Project Name", "Project Code"],
     };
 
+    // Slash-filter tokens: field:'value' (contains) or field:"value" (exact)
+    const FILTER_FIELDS = {
+        particular_item: "Particulars_Item",
+        business_unit: "Business Unit",
+        project_name: "Project Name",
+        project_code: "Project Code",
+        project_manager: "Project Manager",
+        supplier_account_name: "Supplier Details_Account Name",
+    };
+
     const SCHEMA = {
         requestNo: "string",
         status: "string",
@@ -96,6 +106,30 @@ const Search = (() => {
         return out.sort(statusPrioritySort);
     }
 
+    // Strip field:'value' / field:"value" tokens out of a query string.
+    // Double quotes => exact whole-value match. Single quotes => substring match.
+    const FIELD_TOKEN_RE = /([a-z_]+):(['"])(.*?)\2/gi;
+
+    function parseFieldFilters(query) {
+        const fieldFilters = [];
+        const rest = query.replace(FIELD_TOKEN_RE, (match, name, quote, value) => {
+            const column = FILTER_FIELDS[name.toLowerCase()];
+            if (!column) return match;   // unknown field → leave as plain text
+            fieldFilters.push({ field: name.toLowerCase(), column, value, exact: quote === '"' });
+            return " ";
+        });
+        return { fieldFilters, rest: rest.trim() };
+    }
+
+    function rowMatchesFieldFilters(row, fieldFilters) {
+        return fieldFilters.every(f => {
+            const cell = row[f.column];
+            if (typeof cell !== "string") return false;
+            if (f.exact) return cell.trim().toLowerCase() === f.value.trim().toLowerCase();
+            return cell.toLowerCase().includes(f.value.toLowerCase());
+        });
+    }
+
     function parseQuery(query) {
         const phrases = [];
         const excludes = [];
@@ -126,16 +160,38 @@ const Search = (() => {
         const { tab = "all", exact = false, limit = 500 } = opts;
         if (!query.trim() || !ready) return [];
 
-        if (exact) return exactSubstring(query, tab, limit);
+        // Pull out field:'value' tokens before anything else
+        const { fieldFilters, rest } = parseFieldFilters(query);
+        const hasFieldFilters = fieldFilters.length > 0;
 
-        const { phrases, excludes, remainder } = parseQuery(query);
+        // Field filters with no other search text → scan rows directly
+        if (hasFieldFilters && !rest) {
+            const out = [];
+            for (let i = 0; i < rawData.length && out.length < limit; i++) {
+                if (rowMatchesFieldFilters(rawData[i], fieldFilters)) {
+                    out.push({ item: rawData[i], score: 0 });
+                }
+            }
+            return out.sort(statusPrioritySort);
+        }
+
+        // Remaining text drives the search; field filters narrow the result set
+        const effectiveQuery = hasFieldFilters ? rest : query;
+        const narrow = (results) => hasFieldFilters
+            ? results.filter(r => rowMatchesFieldFilters(r.item, fieldFilters))
+            : results;
+
+        if (exact) return narrow(exactSubstring(effectiveQuery, tab, limit));
+
+        const { phrases, excludes, remainder } = parseQuery(effectiveQuery);
         const fields = TAB_FIELD_NAMES[tab];
 
         // Only exclusions, no positive terms → all rows minus excluded
         if (!remainder && phrases.length === 0 && excludes.length > 0) {
             const out = [];
             for (let i = 0; i < rawData.length && out.length < limit; i++) {
-                if (!rowContainsExcludes(rawData[i], excludes, fields)) {
+                if (!rowContainsExcludes(rawData[i], excludes, fields) &&
+                    (!hasFieldFilters || rowMatchesFieldFilters(rawData[i], fieldFilters))) {
                     out.push({ item: rawData[i], score: 0 });
                 }
             }
@@ -147,7 +203,8 @@ const Search = (() => {
             const out = [];
             for (let i = 0; i < rawData.length && out.length < limit; i++) {
                 if (rowContainsPhrases(rawData[i], phrases, fields) &&
-                    (excludes.length === 0 || !rowContainsExcludes(rawData[i], excludes, fields))) {
+                    (excludes.length === 0 || !rowContainsExcludes(rawData[i], excludes, fields)) &&
+                    (!hasFieldFilters || rowMatchesFieldFilters(rawData[i], fieldFilters))) {
                     out.push({ item: rawData[i], score: 0 });
                 }
             }
@@ -176,6 +233,7 @@ const Search = (() => {
         if (excludes.length > 0) {
             out = out.filter(r => !rowContainsExcludes(r.item, excludes, fields));
         }
+        out = narrow(out);
 
         const q = searchTerm.toLowerCase();
         const withMatch = [];
@@ -195,5 +253,25 @@ const Search = (() => {
     function getAll() { return rawData; }
     function getHeaders() { return headers; }
 
-    return { init, search, isReady, getAll, getHeaders };
+    function getFilterFields() { return FILTER_FIELDS; }
+
+    // Distinct values for a slash-filter field, for value autocomplete
+    function getFieldValues(fieldName, prefix = "", limit = 8) {
+        const column = FILTER_FIELDS[fieldName];
+        if (!column) return [];
+        const p = prefix.toLowerCase();
+        const seen = new Set();
+        for (const row of rawData) {
+            const v = row[column];
+            if (typeof v !== "string") continue;
+            const t = v.trim();
+            if (!t) continue;
+            if (p && !t.toLowerCase().includes(p)) continue;
+            if (!seen.has(t)) seen.add(t);
+            if (seen.size >= limit) break;
+        }
+        return Array.from(seen);
+    }
+
+    return { init, search, isReady, getAll, getHeaders, getFilterFields, getFieldValues, parseFieldFilters };
 })();
