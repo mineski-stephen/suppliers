@@ -5,5 +5,9 @@
   "theme": "system",
   "exchangeRate": 57,
   "currencyDisplay": "",
-  "godmodeKey": "Z29kbW9kZQ=="
+  "godmodeKey": "Z29kbW9kZQ==",
+  "larkProxy": "https://lark-proxy-dwiw.onrender.com",
+  "larkAppToken": "WW2pb1ht1aSTEDstV1qlTR2Igpe",
+  "larkTableId": "tblvHDMbE51scSwf",
+  "larkAutoApply": true
 }

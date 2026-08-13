@@ -20,6 +20,12 @@ const Lark = (() => {
     const MAX_PAGES = 200;      // runaway guard (~100k records); never silent
     const PAGE_DELAY_MS = 120;  // stay clear of Lark's rate limits
 
+    // Render's free tier sleeps after ~15 min idle; the first request then
+    // cold-starts. If the token request is slower than the threshold, we assume
+    // a cold start and tick down an estimate (Render docs: ~30-60s spin-up).
+    const COLD_START_AFTER_MS = 2500;
+    const COLD_START_ESTIMATE_MS = 45000;
+
     // Records carry epoch milliseconds; the historical spreadsheet stored
     // Asia/Manila wall-clock time. Verified against the existing database:
     // every date field (including the date-only payment date, which lands
@@ -192,15 +198,50 @@ const Lark = (() => {
      * Resolves { result, meta } where meta records how the run ended, so a
      * short read is reported rather than passed off as complete.
      */
-    async function fetchAll(config, onProgress) {
+    // Run `task`, and if it hasn't resolved by COLD_START_AFTER_MS, treat the
+    // proxy as waking from sleep and emit a ticking "~Ns remaining" estimate
+    // until it does resolve.
+    async function withColdStartWatch(task, log) {
+        const start = performance.now();
+        let cold = false, ticker = null;
+        const armed = setTimeout(() => {
+            cold = true;
+            const tick = () => {
+                const remaining = Math.round((COLD_START_ESTIMATE_MS - (performance.now() - start)) / 1000);
+                const m = remaining > 0
+                    ? "Proxy asleep — waking from cold start… ~" + remaining + "s remaining (est.)"
+                    : "Proxy waking — almost there…";
+                log(m, m);   // cold-start countdown is worth showing in the toast
+            };
+            tick();
+            ticker = setInterval(tick, 1000);
+        }, COLD_START_AFTER_MS);
+        try {
+            return await task();
+        } finally {
+            clearTimeout(armed);
+            if (ticker) clearInterval(ticker);
+            if (cold) log("Proxy is awake (" + Math.round((performance.now() - start) / 1000) + "s to wake).", null);
+        }
+    }
+
+    // log(consoleMsg, toastMsg): consoleMsg always logged; toast updates only
+    // when toastMsg is a non-null string. Per-page chatter stays console-only so
+    // the toast doesn't flicker as pages arrive.
+    async function fetchAll(config, onLog) {
+        const log = (consoleMsg, toastMsg) => { if (onLog) onLog(consoleMsg, toastMsg); };
         if (!isConfigured(config)) throw new Error("Lark is not configured");
 
-        const token = await getToken(config);
+        log("Connecting to proxy " + proxyBase(config) + " …", null);
+        log("Requesting access token…", "Requesting access token…");
+        const token = await withColdStartWatch(() => getToken(config), log);
+        log("Access token acquired (" + token.slice(0, 6) + "…).", "Fetching latest data…");
         const base = proxyBase(config);
         const items = [];
         let pageToken = "", pages = 0, total = null, hasMore = true, stoppedEarly = null;
 
         while (hasMore && pages < MAX_PAGES) {
+            log("Fetching page " + (pages + 1) + "…", null);
             const target = searchUrl(config, pageToken);
             const resp = await fetch(base + PROXY_PATH + encodeURIComponent(target), {
                 method: "POST",
@@ -231,7 +272,12 @@ const Lark = (() => {
             pageToken = d.page_token || "";
             pages++;
 
-            if (onProgress) onProgress({ page: pages, records: items.length, total });
+            log("Page " + pages + " received — " + items.length.toLocaleString() + " records so far"
+                + (total != null ? " of " + total.toLocaleString() : "")
+                + (hasMore ? " (more to come)…" : "."),
+                // Smooth, monotonic toast line — just the running count
+                "Fetching latest data… " + items.length.toLocaleString()
+                    + (total != null ? " / " + total.toLocaleString() : "") + " records");
 
             if (hasMore && !pageToken) {
                 stoppedEarly = "has_more was set but no page_token was returned";
@@ -243,6 +289,11 @@ const Lark = (() => {
         if (hasMore && !stoppedEarly && pages >= MAX_PAGES) {
             stoppedEarly = "hit the " + MAX_PAGES + "-page safety cap";
         }
+
+        log(stoppedEarly
+            ? "Fetch stopped early: " + stoppedEarly + " (" + items.length.toLocaleString() + " records collected)."
+            : "Fetch complete — " + items.length.toLocaleString() + " records across " + pages + " page(s).",
+            null);   // app.js sets the final toast (with the reload prompt)
 
         const meta = {
             pages,

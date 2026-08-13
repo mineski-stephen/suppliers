@@ -492,6 +492,16 @@ const App = (() => {
         $("#live-toast").classList.remove("visible");
     }
 
+    // Verbose Lark logging → browser console, timestamped and tagged.
+    function larkLog(msg) {
+        const t = new Date().toLocaleTimeString();
+        console.log("%c[Lark " + t + "]%c " + msg, "color:#4dabf7;font-weight:700", "color:inherit");
+    }
+
+    // Full-screen black overlay + spinner
+    function showReloadOverlay() { $("#reload-overlay").classList.add("visible"); }
+    function hideReloadOverlay() { $("#reload-overlay").classList.remove("visible"); }
+
     // The toast is bottom-fixed and would sit on top of the filter sheet,
     // settings, or a modal. Suppress it (via a body class the CSS keys off)
     // whenever one of those is open, so it never blocks their controls.
@@ -505,27 +515,48 @@ const App = (() => {
 
     // Kicks off while the user is already working against the bundled database.
     // Deliberately never blocks the UI and never replaces data on its own — a
-    // swap mid-search would be hostile, so it only offers.
-    async function startLiveFetch() {
-        if (liveFetching) return;
-        if (!config.larkAutoFetch || !Lark.isConfigured(config)) return;
+    // swap mid-search would be hostile when auto-apply is off — then it only offers.
+    async function startLiveFetch(opts = {}) {
+        const force = !!opts.force;
+        // The page always fetches the latest data. The toggle only decides what
+        // happens after: auto-apply it, or offer a reload prompt. A manual force
+        // refresh always applies (the user explicitly asked for the newest data).
+        const autoApply = force || config.larkAutoApply !== false;
+
+        if (liveFetching) { larkLog("Fetch already running — ignoring request."); return; }
+        if (!Lark.isConfigured(config)) { larkLog("Lark not configured — skipping fetch."); return; }
 
         liveFetching = true;
-        showToast("Fetching latest data…", null, false);
+        larkLog(force ? "▶ Force refresh requested." : "▶ Fetch starting (auto-apply " + (autoApply ? "on" : "off") + ").");
+        showToast("Connecting to Lark…", null, false);
 
         try {
-            const { result, meta } = await Lark.fetchAll(config, ({ records }) => {
-                showToast("Fetching latest data… " + records.toLocaleString() + " records", null, false);
+            // Every step goes to the console; only steps with a toastMsg update
+            // the toast (per-page chatter is console-only so it doesn't flicker).
+            const { result, meta } = await Lark.fetchAll(config, (consoleMsg, toastMsg) => {
+                larkLog(consoleMsg);
+                if (toastMsg != null) showToast(toastMsg, null, false);
             });
 
             liveResult = { result, meta };
             const n = result.data.length;
+            larkLog("✔ Ready: " + n.toLocaleString() + " records (current DB has " + db.length.toLocaleString() + ").");
 
-            // Report a short read rather than presenting it as the full table
+            // A short/partial read is never applied silently — always ask.
             if (meta.stoppedEarly) {
                 showToast("Fetched " + n.toLocaleString() + " records but stopped early ("
                     + meta.stoppedEarly + "). Reload anyway?", "error", true);
-            } else if (meta.countMismatch) {
+                return;
+            }
+
+            if (autoApply) {
+                larkLog("Auto-applying latest data.");
+                await applyLiveData();
+                return;
+            }
+
+            // Auto-apply off → offer a prompt instead of swapping automatically.
+            if (meta.countMismatch) {
                 showToast("Latest data ready — " + meta.countMismatch
                     + " (table changed while reading). Reload database?", "done", true);
             } else {
@@ -536,10 +567,19 @@ const App = (() => {
             }
         } catch (e) {
             console.error("Lark fetch failed:", e);
+            larkLog("✖ Fetch failed: " + e.message);
             showToast("Couldn't fetch latest data: " + e.message, "error", false);
         } finally {
             liveFetching = false;
         }
+    }
+
+    // Settings → force a fresh fetch and apply it now, regardless of the toggle.
+    function forceRefresh() {
+        larkLog("Force refresh button pressed.");
+        closeSettings();
+        liveResult = null;   // discard any stale pending result
+        startLiveFetch({ force: true });
     }
 
     // Swap in the fetched records and rebuild everything that derives from db
@@ -549,38 +589,49 @@ const App = (() => {
 
         const missing = REQUIRED_COLUMNS.filter(c => !result.meta.fields.includes(c));
         if (missing.length > 0) {
+            larkLog("✖ Reload aborted — live data missing columns: " + missing.join(", "));
             showToast("Live data is missing columns: " + missing.join(", "), "error", false);
             return;
         }
 
-        showToast("Loading latest data…", null, false);
-        headers = result.meta.fields;
-        db = result.data.filter(row => Object.values(row).some(v => v && v.trim && v.trim() !== ""));
+        larkLog("Reloading database with fetched data…");
+        hideToast();
+        showReloadOverlay();
+        const minWait = new Promise(r => setTimeout(r, 1000));   // overlay lasts ≥1s
 
         try {
+            headers = result.meta.fields;
+            db = result.data.filter(row => Object.values(row).some(v => v && v.trim && v.trim() !== ""));
+
             await Search.init(db, headers, () => {});
+
+            // Anything cached from the old dataset is now stale
+            cachedResults = null;
+            cachedQuery = "";
+            cachedHighlight = "";
+            liveResult = null;
+
+            updateStats();
+            renderCarousel();
+
+            const full = getFullQuery();
+            if (full) {
+                await performSearch(full, getHighlightText());
+            } else {
+                clearResults();
+            }
+            larkLog("✔ Database reloaded — " + db.length.toLocaleString() + " records.");
         } catch (e) {
             console.error("Rebuilding the index for live data failed:", e);
+            larkLog("✖ Index rebuild failed: " + e.message);
+            await minWait;
+            hideReloadOverlay();
             showToast("Failed to index latest data: " + e.message, "error", false);
             return;
         }
 
-        // Anything cached from the old dataset is now stale
-        cachedResults = null;
-        cachedQuery = "";
-        cachedHighlight = "";
-        liveResult = null;
-
-        updateStats();
-        renderCarousel();
-
-        const full = getFullQuery();
-        if (full) {
-            await performSearch(full, getHighlightText());
-        } else {
-            clearResults();
-        }
-
+        await minWait;
+        hideReloadOverlay();
         showToast("Database updated — " + db.length.toLocaleString() + " records.", "done", false);
         setTimeout(hideToast, 4000);
     }
@@ -1902,6 +1953,12 @@ const App = (() => {
         await loadConfig();
         applyUrlSettingsEarly();
 
+        // Auto-apply preference (default on): whether fetched data is applied
+        // automatically or offered via a reload prompt. Fetching always happens.
+        const savedAutoApply = localStorage.getItem("larkAutoApply");
+        if (savedAutoApply !== null) config.larkAutoApply = savedAutoApply === "true";
+        else if (config.larkAutoApply === undefined) config.larkAutoApply = config.larkAutoFetch !== false;
+
         const savedTheme = localStorage.getItem("theme") || config.theme || "system";
         applyTheme(savedTheme);
 
@@ -2291,6 +2348,16 @@ const App = (() => {
 
         // Search help
         $("#search-help-btn").addEventListener("click", openHelp);
+        $("#force-refresh-btn").addEventListener("click", forceRefresh);
+
+        // Auto-apply toggle — reflects current setting, persists on change.
+        const autoRefreshToggle = $("#auto-refresh-toggle");
+        autoRefreshToggle.checked = config.larkAutoApply !== false;
+        autoRefreshToggle.addEventListener("change", () => {
+            config.larkAutoApply = autoRefreshToggle.checked;
+            localStorage.setItem("larkAutoApply", String(autoRefreshToggle.checked));
+            larkLog("Auto-apply " + (autoRefreshToggle.checked ? "enabled" : "disabled") + ".");
+        });
         $("#help-close").addEventListener("click", closeHelp);
         $("#modal-overlay").addEventListener("click", () => {
             if ($("#help-modal").classList.contains("visible")) closeHelp();

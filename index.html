@@ -160,6 +160,14 @@
     <!-- Filter sheet backdrop (mobile) -->
     <div class="filter-backdrop" id="filter-backdrop"></div>
 
+    <!-- Full-screen reload overlay -->
+    <div class="reload-overlay" id="reload-overlay">
+        <div class="reload-overlay-box">
+            <div class="reload-overlay-spinner"></div>
+            <div class="reload-overlay-text">Loading latest database</div>
+        </div>
+    </div>
+
     <!-- Live data status toast (bottom centre) -->
     <div class="live-toast" id="live-toast" role="status" aria-live="polite">
         <div class="live-toast-spinner" id="live-toast-spinner"></div>
@@ -261,11 +269,11 @@
 
             <div class="help-group">
                 <div class="help-group-title">Live Data</div>
-                <p class="help-note">The page opens on the bundled database, then checks the Lark base for newer records in the background. A bar appears at the bottom when it finishes &mdash; nothing is replaced until you choose <b>Reload</b>, so a search in progress is never disturbed.</p>
-                <div class="help-row"><span class="help-lbl">Fetching…</span><span>The background read is still running. Large tables are read in pages.</span></div>
-                <div class="help-row"><span class="help-lbl">Reload</span><span>Swaps in the fetched records and rebuilds the search index. Your current search is re-run against the new data.</span></div>
-                <div class="help-row"><span class="help-lbl">Dismiss</span><span>Keeps the bundled database. Reopen the page to check again.</span></div>
-                <div class="help-note">If the fetch fails or returns a short read, the bar says so rather than quietly showing partial data.</div>
+                <p class="help-note">The page opens on the bundled database, then always fetches the latest records from the Lark base in the background. A bar at the bottom shows progress.</p>
+                <div class="help-row"><span class="help-lbl">Auto-apply (on)</span><span>The default. New data is loaded automatically when the fetch finishes (brief "Loading latest database" overlay). Toggle it in Settings.</span></div>
+                <div class="help-row"><span class="help-lbl">Auto-apply (off)</span><span>The fetch still runs, but the bar offers <b>Reload</b> / <b>Dismiss</b> so you decide when to swap — a search in progress is never disturbed.</span></div>
+                <div class="help-row"><span class="help-lbl">Force refresh</span><span>Settings → Database. Fetches and applies the latest data immediately, regardless of the toggle.</span></div>
+                <div class="help-note">A failed fetch or a short/partial read is always surfaced and never applied silently.</div>
             </div>
 
             <div class="help-group">
@@ -314,6 +322,19 @@
         <div class="settings-section" id="settings-db-section" style="display:none">
             <div class="settings-section-title">Database</div>
             <div class="settings-db-date" id="settings-db-date"></div>
+            <label class="settings-toggle-row">
+                <span>Auto-apply latest data<br><span class="settings-toggle-sub">Always fetches; off = ask before reloading</span></span>
+                <span class="settings-switch">
+                    <input type="checkbox" id="auto-refresh-toggle" checked>
+                    <span class="settings-switch-track"></span>
+                </span>
+            </label>
+            <button class="help-btn" id="force-refresh-btn">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                </svg>
+                <span>Force refresh from Lark</span>
+            </button>
         </div>
 
         <!-- Theme Section -->
