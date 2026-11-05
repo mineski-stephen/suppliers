@@ -55,7 +55,7 @@
 .qexact[aria-pressed="true"] .i { opacity: 1; }
 .qbox .suggest { left: -1px; right: -1px; animation: menuIn .15s var(--ease) both; }
 /* on the landing the search sits lower, and moves up when results come (as before) */
-.view-search:not(.has-results) .qhead { padding-top: 9vh; }
+.view-search:not(.has-results) .qhead { padding-top: 9vh; padding-top: round(down, 9vh, 1px); }   /* whole pixels: a spinner on a half pixel wobbles */
 .suggest li b.mono { font-size: 13.5px; }
 
 /* the tabs and the list tools under the box */
@@ -65,6 +65,8 @@
 .qbar .tab[aria-selected="true"] { background: var(--brand-soft); }
 .qbar-tools { display: flex; gap: 6px; flex: none; }
 .filter-btn { position: relative; }
+/* the refresh icon spins on a layer of its own, around its exact centre, so it can't shift while it turns */
+.icon-btn.is-busy .i { will-change: transform; transform-origin: 50% 50%; backface-visibility: hidden; }
 .filter-btn .count { position: absolute; top: -6px; right: -6px; }
 
 .list-status { margin: 8px 2px 4px; }
