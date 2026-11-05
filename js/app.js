@@ -316,23 +316,49 @@ async function login(returnTo) {
 // The search in the address bar is kept across Lark's page (Lark returns to the bare address).
 auth.onBeforeLogin(() => store("session", KEY.view, location.search));
 
-/* A login ended (the clock, Lark refusing the token, Log out): drop every record from memory. */
-function sessionEnded(message) {
+/* Drop every record from memory. */
+function forgetRecords() {
   S.gen++;
-  for (const d of document.querySelectorAll("dialog[open]")) d.close();
-  filters.close({ focus: false });
-  closeMenu();
   Object.assign(S, { rows: null, byId: new Map(), index: null, stats: null, schema: null, results: null, fresh: null, fromCache: false,
                      open: null, loadError: null, loadedAt: 0, countNote: "", user: null });
   carousel.render([]);
   results.render();
   detail.render({ instant: true });   // the panel's text goes too (it may show a supplier's bank details)
+}
+
+/* A login ended (the clock, Lark refusing the token, Log out, here or in another tab or tool: they
+   share the login): drop every record from memory. Ended early elsewhere (most likely Log out in
+   another tool): the saved copy goes too, as with Log out here. */
+function sessionEnded(message, { elsewhere = false } = {}) {
+  S.gen++;
+  for (const d of document.querySelectorAll("dialog[open]")) d.close();
+  filters.close({ focus: false });
+  closeMenu();
+  if (elsewhere) dropCache();
+  forgetRecords();
   S.loginNote = message || "Your login ended after about 2 hours. Log in again to keep going.";
   S.returnTo = location.hash || "#/";
   if (S.view !== "settings") S.view = "login";
   render();
 }
 auth.onEnded(sessionEnded);
+
+/* Another tab, of Suppliers or another Mineski tool, logged in or renewed the login (js/session.js).
+   A tab on the login screen goes straight in and reads the table. If it's someone else now, what
+   this tab read for the previous person goes first. */
+function sharedLogin({ renewed }) {
+  S.loginNote = "";
+  const was = ownerOf(S.user);
+  auth.loadUser().then((u) => {
+    if (was && ownerOf(u) !== was) { forgetRecords(); S.user = u; onRoute(); return; }
+    S.user = u;
+    renderHeader();
+    if (S.view === "settings") settingsView.paint();
+  }).catch(() => {});
+  if (renewed) { renderHeader(); if (S.view === "settings") settingsView.tick(); return; }
+  if (S.view !== "busy") onRoute();   // busy: this tab is finishing its own login
+}
+auth.onShared(sharedLogin);
 
 /* ======================= loading ======================= */
 const showingResults = () => !!S.results || !!S.open;
@@ -622,7 +648,6 @@ auth.startClock(() => { renderHeader(); settingsView.tick(); });
     if (!res.ok) S.loginNote = res.message;
   } else {
     if (!location.hash) history.replaceState(null, "", `${location.pathname}${location.search}#/`);
-    if (!auth.currentToken()) await auth.borrowLogin();   // another open Suppliers tab may already be logged in
   }
   settings.takeUrlChoices(new URLSearchParams(location.search));
   applyUrlState();

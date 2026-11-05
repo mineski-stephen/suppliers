@@ -42,9 +42,10 @@ anything in Lark.
 
 ## Using it
 
-1. Open Suppliers and press **Log in with Lark**. A login lasts about 2 hours; each
-   browser tab logs in on its own (one click if Lark remembers you). A tab opened from
-   another logged-in Suppliers tab, such as a shared link, uses that login.
+1. Open Suppliers and press **Log in with Lark**. A login lasts about 2 hours and is shared
+   with Fetch and Polaris: log in to any of them and you're logged in to all three in this
+   browser, in every tab (a shared link included), with one timer. Closing the tab doesn't
+   log you out.
 2. The first time, wait a moment while it reads the procurement records ("Reading the
    records… 1,500 of 3,410"); the connection service may need up to a minute to wake up.
    After that, the records you had last time are on screen at once ("Saved copy from …")
@@ -136,7 +137,8 @@ Browser storage (all JSON):
 | --- | ----- | ----- |
 | `suppliers.theme` | localStorage | `"light"` or `"dark"` (absent = System) |
 | `suppliers.settings` | localStorage | `{ exchangeRate, showPrices, larkUrl }` (`larkUrl` only on a local page) |
-| `suppliers.auth.token` / `.pending` / `.user` | sessionStorage | the Lark login, the login in progress, your name and picture |
+| `mineski.auth.token` / `.user` | localStorage | the Lark login and your name and picture, **shared by every Mineski tool on this site** (through `js/session.js`, copied unedited from `design-ref/mineski-systems-design/assets/`) |
+| `suppliers.auth.pending` | sessionStorage | a login in progress (it finishes in the tab that started it) |
 | `suppliers.cache.<app>:<table>` | localStorage | the saved copy of the records: gzipped, without account numbers, bank names or addresses, tagged with who saved it. About 10% of the plain size |
 | `suppliers.view` | sessionStorage | the search in the address bar while you're on Lark's login page |
 | `suppliers.override.lark` | sessionStorage | a `?lark=` test address (local page only) |
@@ -155,8 +157,10 @@ See [Security and privacy](#security-and-privacy) for when the saved copy is del
 
 1. **Login** (`js/auth.js`): OAuth with PKCE, as in Fetch and Polaris. Lark sends the
    person back with a code; the page removes it from the address bar, wakes the proxy
-   and swaps the code once (45 s) for a user token. A session clock warns 5 minutes
-   before the end and ends the session on time.
+   and swaps the code once (45 s) for a user token, kept as the login shared by every
+   Mineski tool on the site (`js/session.js`): every other open tab, of any tool, hears
+   about it, and a logout in any of them ends it everywhere. A session clock warns 5
+   minutes before the end and ends the session on time.
 2. **Loading** (`js/app.js` `load`): wake the proxy (it sleeps when idle), read the
    columns and check them (`js/schema.js`), read every record 500 at a time
    (`js/tables.js`: a list Lark cuts short throws instead of looking complete), turn
@@ -284,8 +288,12 @@ typed; rich text with a link inside no longer shows stray commas.
 - **No secret in the page or the folder.** The app secret lives on the Lark proxy; the page
   sends people's own tokens, only to the proxy, only in an `Authorization` header (the
   CSP lets the page talk to nothing else).
-- **Logins are per tab** (sessionStorage) and last about 2 hours. **Log out** forgets the
-  token in this tab; Lark has no "revoke", so you stay logged in to Lark itself.
+- **One login for every Mineski tool on this site** (localStorage `mineski.auth.token`),
+  lasting about 2 hours; closing the tab doesn't log you out, so on a shared computer use
+  **Log out**. Every page on `mineski-stephen.github.io` can read that storage, so only
+  Mineski tools are published there. **Log out** forgets the token for Suppliers, Fetch and
+  Polaris in this browser (an open Suppliers tab also deletes the saved copy when you log out
+  in another tool); Lark has no "revoke", so you stay logged in to Lark itself.
 - **The saved copy of the records** (`suppliers.cache.…`) holds no account numbers, bank names
   or addresses, and only the person who saved it can open it: another login drops it. **Log out**
   and **Clear local data** delete it. A login that simply runs out keeps it, so the next login starts
@@ -320,6 +328,7 @@ typed; rich text with a link inside no longer shows stray commas.
 | "Out of date (…). Ask the admin to redeploy it." | The owner redeploys the Lark proxy. |
 | "Your login ends at 4:30 PM." | Press **Log in again** to keep going without a break. |
 | "Your login ended after about 2 hours. Log in again to keep going." | Log in again; your search comes back. |
+| "Your login ended in another tab. Log in again to keep going." | You (or someone at this computer) logged out of Suppliers, Fetch or Polaris in another tab, or Lark ended the login there. They share one login, so log in again in any of them. |
 | "Lark counted … records but … came back" | Someone changed the table while it was read. Press Refresh. |
 | "Showing the best 500 matches." | Add a word, a field filter or a filter to narrow it down. |
 | "No records match “…” with these filters." | Press **Reset filters**, or pick more statuses (only Approved is shown by default). |
@@ -352,6 +361,7 @@ typed; rich text with a link inside no longer shows stray commas.
 | `js/config.js` | name, version, the proxy, the Lark app, the table link, the rules |
 | `js/app.js` | state, routes, login, loading, the address bar |
 | `js/auth.js`, `js/net.js`, `js/errors.js`, `js/settings.js` | login and session, the proxy, error sentences, per-browser settings |
+| `js/session.js` | the login shared by every Mineski tool on the site (copied unedited from `design-ref/mineski-systems-design/assets/`) |
 | `js/tables.js`, `js/schema.js`, `js/rows.js` | reading the table, its columns, records to rows |
 | `js/cache.js` | the saved copy of the records |
 | `js/query.js`, `js/search.js`, `js/vendor/orama.js` | the search language and list rules, ranking, Orama 3.1.18 |

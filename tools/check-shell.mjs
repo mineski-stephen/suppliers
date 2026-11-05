@@ -55,6 +55,12 @@ function skillDir() {
     join(ROOT, ".claude", "skills", "mineski-design-language")].filter(Boolean);
   return candidates.find((d) => existsSync(join(d, "assets", "ui.js")));
 }
+// The systems design's shared files (js/session.js: the login shared by the Mineski tools).
+function systemsDir() {
+  const candidates = [join(ROOT, "..", "design-ref", "mineski-systems-design"),
+    join(ROOT, ".claude", "skills", "mineski-systems-design")];
+  return candidates.find((d) => existsSync(join(d, "assets", "session.js")));
+}
 
 function run() {
   let failures = 0;
@@ -87,6 +93,10 @@ function run() {
     const mineServe = readFileSync(join(ROOT, "tools", "serve.py"), "utf8");
     ok(noPort(mineServe) === noPort(readFileSync(join(skill, "tools", "serve.py"), "utf8")), "tools/serve.py is the design language's, with only PORT changed");
     ok(/^PORT = 9125\b/m.test(mineServe), "tools/serve.py serves Suppliers' registered port, 9125");
+  }
+  const systems = systemsDir();
+  if (ok(!!systems, "systems design found")) {
+    ok(md5(join(ROOT, "js", "session.js")) === md5(join(systems, "assets", "session.js")), "js/session.js is identical to the systems design's assets/session.js");
   }
 
   console.log("Page");

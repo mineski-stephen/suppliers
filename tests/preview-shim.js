@@ -3,7 +3,8 @@
 
    Suppliers runs unchanged, but every call to the connection service is answered here from
    tests/fixture.json: MADE-UP records (npm run preview:fixture). Nothing is sent to Lark, and a
-   badge says so on screen. Use a separate tab: this puts a fake login in the tab's sessionStorage.
+   badge says so on screen. The fake login lives under its own keys (mineski.preview.auth.*, see
+   js/session.js), so it never replaces a real one.
    Records come back 150 at a time, a little slowly, so the loader's stages and counts show. */
 (function () {
   "use strict";
@@ -12,10 +13,11 @@
   var fixture = function () {
     return fx || (fx = realFetch("tests/fixture.json?v=" + Date.now()).then(function (r) { return r.json(); }));
   };
-  sessionStorage.setItem("suppliers.auth.token", JSON.stringify({
+  window.MINESKI_PREVIEW = true;   // js/session.js keeps this login under mineski.preview.auth.*
+  localStorage.setItem("mineski.preview.auth.user", JSON.stringify({ name: "Preview Mode", avatar: "", email: "" }));   // the name first: other tabs read it when the token's change reaches them
+  localStorage.setItem("mineski.preview.auth.token", JSON.stringify({
     access_token: "preview-only", scope: "bitable:app", expires_at: Date.now() + 95 * 60000,
   }));
-  sessionStorage.setItem("suppliers.auth.user", JSON.stringify({ name: "Preview Mode", avatar: "", email: "" }));
 
   var PAGE = 150;
   var reply = function (obj, ms) {
