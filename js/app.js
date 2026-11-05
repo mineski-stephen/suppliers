@@ -1,2393 +1,640 @@
-const App = (() => {
-    let config = {};
-    let currentPassword = "";
-    let db = [];
-    let headers = [];
-    let selectedIndex = -1;
-    let searchTimeout = null;
-    let detailTimeout = null;
-    let activeTab = "all";
-    let exactMatch = false;
-    let userExact = false;
-    let autoExact = false;
-    let carouselRAF = null;
-    let carouselAutoSpeed = 0.5;
-    let carouselVelocity = 0;
-    let carouselDragging = false;
-    let carouselDragStartX = 0;
-    let carouselLastX = 0;
-    let carouselLastTime = 0;
-    let carouselPaused = false;
-    let carouselDidDrag = false;
-    let currentSort = null;
-    let statusFilters = new Set(["Approved"]);
-    let outsourceMode = null; // null | "only" | "hide"
-    let currencyFilter = null; // null | "PHP" | "USD"
-    let groupBy = null;
-    let cachedResults = null;
-    let cachedQuery = "";
-    let cachedHighlight = "";
-    let exchangeRate = 57;
-    let currencyDisplay = null; // null | "PHP" | "USD"
-    let currentDetailItem = null;
-    let godmodeActive = false;
-    let godmodeString = "godmode";
-
-    const REQUIRED_COLUMNS = ["Request No.", "Status", "Particulars_Item", "Supplier Details_Supplier Name", "Project Name"];
-
-    const $ = (sel) => document.querySelector(sel);
-    const $$ = (sel) => document.querySelectorAll(sel);
-
-    async function loadConfig() {
-        try {
-            const resp = await fetch("config.json");
-            config = await resp.json();
-        } catch (e) {
-            console.error("Failed to load config.json:", e);
-            config = {};
-        }
-        document.title = config.appName || "Procurement Database";
-        $("#app-title").textContent = config.appName || "Procurement Database";
-        if (config.godmodeKey) {
-            try { godmodeString = atob(config.godmodeKey); } catch {}
-        }
-    }
-
-    function getDebugPassword() {
-        if (config.debugKey) {
-            try { return atob(config.debugKey); } catch { return ""; }
-        }
-        return "";
-    }
-
-    // --- URL Parameters ---
-    let urlDebugKey = "";          // base64 key, re-emitted into URL once it decrypts
-    let suppressUrlUpdate = false; // true while applying params, so we don't fight ourselves
-
-    const SORT_TO_URL = {
-        "date-asc": "dateasc", "date-desc": "datedesc",
-        "price-asc": "priceasc", "price-desc": "pricedesc",
-        "unitprice-asc": "unitpriceasc", "unitprice-desc": "unitpricedesc",
-        "project-asc": "projaz", "project-desc": "projza",
-    };
-    const URL_TO_SORT = Object.fromEntries(Object.entries(SORT_TO_URL).map(([k, v]) => [v, k]));
-    const GROUP_TO_URL = {
-        "Business Unit": "business unit",
-        "Project Name": "project",
-        "Supplier Details_Supplier Name": "supplier",
-    };
-    const URL_TO_GROUP = Object.fromEntries(Object.entries(GROUP_TO_URL).map(([k, v]) => [v, k]));
-    const STATUS_CANON = { "approved": "Approved", "under review": "Under Review", "recalled": "Recalled", "rejected": "Rejected" };
-
-    function getUrlParams() {
-        return new URLSearchParams(location.search);
-    }
-
-    function buildQueryString() {
-        const p = new URLSearchParams();
-        if (urlDebugKey) p.set("debugkey", urlDebugKey);
-        const q = getFullQuery();
-        if (q) p.set("q", q);
-        // Disabled chips are kept out of q (which must stay a valid query) and
-        // carried separately so a shared link restores them still switched off.
-        const off = activeFilters.filter(f => f.disabled).map(filterToText).join(" ");
-        if (off) p.set("qoff", off);
-        if (exactMatch) p.set("exact", "true");
-        if (activeTab && activeTab !== "all") p.set("tab", activeTab);
-        if (currentSort && SORT_TO_URL[currentSort]) p.set("sort", SORT_TO_URL[currentSort]);
-        const defaultStatus = statusFilters.size === 1 && statusFilters.has("Approved");
-        if (!defaultStatus && statusFilters.size > 0) {
-            p.set("status", Array.from(statusFilters).map(s => s.toLowerCase()).join(","));
-        }
-        if (outsourceMode === "only") p.set("outsource", "show");
-        else if (outsourceMode === "hide") p.set("outsource", "hide");
-        if (currencyFilter) p.set("currency", currencyFilter.toLowerCase());
-        if (groupBy && GROUP_TO_URL[groupBy]) p.set("group", GROUP_TO_URL[groupBy]);
-        const theme = localStorage.getItem("theme") || config.theme || "system";
-        if (theme !== "system") p.set("theme", theme);
-        if (exchangeRate && Number(exchangeRate) !== 57) p.set("exchangerate", String(exchangeRate));
-        if (currencyDisplay) p.set("showprice", currencyDisplay.toLowerCase());
-        // URLSearchParams uses "+" for spaces (matches ?q=a+b); keep commas literal for the status list
-        return p.toString().replace(/%2C/g, ",");
-    }
-
-    function updateUrl() {
-        if (suppressUrlUpdate) return;
-        const qs = buildQueryString();
-        history.replaceState(null, "", qs ? location.pathname + "?" + qs : location.pathname);
-    }
-
-    // Settings that init() reads from localStorage — inject before those reads.
-    function applyUrlSettingsEarly() {
-        const params = getUrlParams();
-        if (params.has("theme")) {
-            const t = params.get("theme").toLowerCase();
-            if (["system", "light", "dark"].includes(t)) localStorage.setItem("theme", t);
-        }
-        if (params.has("exchangerate")) {
-            const r = parseFloat(params.get("exchangerate"));
-            if (r > 0) localStorage.setItem("exchangeRate", String(r));
-        }
-        if (params.has("showprice")) {
-            const s = params.get("showprice").toLowerCase();
-            const map = { "default": "", "php": "PHP", "usd": "USD" };
-            if (s in map) localStorage.setItem("currencyDisplay", map[s]);
-        }
-    }
-
-    // Search / filter / tab / exact state — applied after DB + UI are ready.
-    async function applyUrlStateLate() {
-        const params = getUrlParams();
-        suppressUrlUpdate = true;
-        try {
-        if (params.has("exact")) {
-            const on = params.get("exact").toLowerCase() === "true";
-            userExact = on;
-            exactMatch = on;
-            $("#exact-toggle").setAttribute("aria-pressed", String(on));
-        }
-
-        if (params.has("tab")) {
-            const t = params.get("tab").toLowerCase();
-            if (["all", "particulars", "suppliers", "projects"].includes(t)) {
-                activeTab = t;
-                $$(".search-tab").forEach(b => b.classList.toggle("active", b.dataset.tab === t));
-            }
-        }
-
-        if (params.has("sort")) {
-            const key = URL_TO_SORT[params.get("sort").toLowerCase()];
-            if (key) {
-                currentSort = key;
-                $$(".filter-option[data-sort]").forEach(b => b.classList.toggle("active", b.dataset.sort === key));
-            }
-        }
-
-        if (params.has("status")) {
-            const list = params.get("status").split(",").map(s => STATUS_CANON[s.trim().toLowerCase()]).filter(Boolean);
-            if (list.length > 0) {
-                statusFilters = new Set(list);
-                $$(".filter-check input[data-status]").forEach(cb => { cb.checked = statusFilters.has(cb.dataset.status); });
-            }
-        }
-
-        if (params.has("outsource")) {
-            const v = params.get("outsource").toLowerCase();
-            if (v === "show") { outsourceMode = "only"; $("#outsource-show-only").checked = true; $("#outsource-hide-all").checked = false; }
-            else if (v === "hide") { outsourceMode = "hide"; $("#outsource-hide-all").checked = true; $("#outsource-show-only").checked = false; }
-        }
-
-        if (params.has("currency")) {
-            const v = params.get("currency").toUpperCase();
-            if (v === "PHP" || v === "USD") {
-                currencyFilter = v;
-                $("#currency-filter-php").checked = v === "PHP";
-                $("#currency-filter-usd").checked = v === "USD";
-            }
-        }
-
-        if (params.has("group")) {
-            const g = params.get("group").toLowerCase();
-            const internal = g === "none" ? null : URL_TO_GROUP[g];
-            if (g === "none" || internal) {
-                groupBy = internal;
-                $$(".filter-option[data-group]").forEach(b => {
-                    b.classList.toggle("active", internal ? b.dataset.group === internal : b.dataset.group === "none");
-                });
-            }
-        }
-
-        updateFilterBadge();
-
-        if (params.has("q") || params.has("qoff")) {
-            const q = params.get("q") || "";
-            // Split field:'value' tokens into chips, leave the rest as free text
-            const { fieldFilters, rest } = Search.parseFieldFilters(q);
-            const chips = fieldFilters.map(f => ({ field: f.field, value: f.value, exact: f.exact, disabled: false }));
-            if (params.has("qoff")) {
-                const off = Search.parseFieldFilters(params.get("qoff")).fieldFilters;
-                off.forEach(f => chips.push({ field: f.field, value: f.value, exact: f.exact, disabled: true }));
-            }
-            setSearchState(chips, rest);
-            if (!params.has("exact") && rest && detectExactPattern(rest)) {
-                autoExact = true;
-                exactMatch = true;
-                $("#exact-toggle").setAttribute("aria-pressed", "true");
-            }
-            const full = getFullQuery();
-            if (full) {
-                hideCarousel();
-                await performSearch(full, getHighlightText());
-            }
-        }
-        } finally {
-            suppressUrlUpdate = false;
-        }
-        updateUrl();
-    }
-
-    // --- Modal ---
-    function showModal(opts = {}) {
-        const modal = $("#password-modal");
-        const overlay = $("#modal-overlay");
-        const errEl = $("#modal-error");
-        const infoEl = $("#modal-info");
-        const passInput = $("#modal-password");
-        const submitBtn = $("#modal-submit");
-        const cancelBtn = $("#modal-cancel");
-        const spinner = $("#modal-spinner");
-        const progEl = $("#modal-progress");
-
-        errEl.textContent = opts.error || "";
-        errEl.style.display = opts.error ? "block" : "none";
-        infoEl.textContent = opts.info || "";
-        infoEl.style.display = opts.info ? "block" : "none";
-        passInput.value = opts.prefill || "";
-        submitBtn.disabled = false;
-        spinner.style.display = "none";
-        cancelBtn.style.display = opts.showCancel ? "" : "none";
-
-        const showProgress = opts.progress !== undefined;
-        progEl.classList.toggle("visible", showProgress);
-        if (showProgress) updateProgress(opts.progress);
-
-        if (opts.hideInput || showProgress) {
-            passInput.style.display = "none";
-            $("#modal-btn-row").style.display = "none";
-        } else {
-            passInput.style.display = "";
-            $("#modal-btn-row").style.display = "";
-        }
-
-        modal.classList.add("visible");
-        overlay.classList.add("visible");
-
-        if (showProgress) return Promise.resolve();
-
-        return new Promise((resolve) => {
-            const cleanup = () => {
-                submitBtn.removeEventListener("click", handler);
-                passInput.removeEventListener("keydown", keyHandler);
-                cancelBtn.removeEventListener("click", cancelHandler);
-            };
-            const handler = (e) => {
-                e.preventDefault();
-                submitBtn.disabled = true;
-                spinner.style.display = "inline-block";
-                cleanup();
-                resolve(passInput.value);
-            };
-            const cancelHandler = () => {
-                cleanup();
-                resolve(null);
-            };
-            const keyHandler = (e) => {
-                if (e.key === "Enter") handler(e);
-                if (e.key === "Escape" && opts.showCancel) cancelHandler();
-            };
-            submitBtn.addEventListener("click", handler);
-            passInput.addEventListener("keydown", keyHandler);
-            cancelBtn.addEventListener("click", cancelHandler);
-            if (!opts.hideInput) passInput.focus();
-            if (opts.autoSubmit && opts.prefill) {
-                setTimeout(() => handler(new Event("click")), 300);
-            }
-        });
-    }
-
-    function updateProgress(p) {
-        const pct = Math.max(0, Math.min(100, Math.round((p || 0) * 100)));
-        $("#modal-progress-bar").style.width = pct + "%";
-        $("#modal-progress-label").textContent = pct + "%";
-    }
-
-    function hideModal() {
-        $("#password-modal").classList.remove("visible");
-        $("#modal-overlay").classList.remove("visible");
-    }
-
-    function showEncryptOffer() {
-        const modal = $("#encrypt-offer-modal");
-        const overlay = $("#modal-overlay");
-        modal.classList.add("visible");
-        overlay.classList.add("visible");
-
-        return new Promise((resolve) => {
-            $("#encrypt-offer-yes").onclick = () => {
-                modal.classList.remove("visible");
-                overlay.classList.remove("visible");
-                resolve(true);
-            };
-            $("#encrypt-offer-no").onclick = () => {
-                modal.classList.remove("visible");
-                overlay.classList.remove("visible");
-                resolve(false);
-            };
-        });
-    }
-
-    // --- Database Loading ---
-    async function fetchDatabase(filename) {
-        const resp = await fetch("data/" + filename);
-        if (!resp.ok) throw new Error("NOT_FOUND");
-        return resp.arrayBuffer();
-    }
-
-    function parseCSV(csvText) {
-        const results = Papa.parse(csvText, {
-            header: true,
-            skipEmptyLines: true,
-            dynamicTyping: false,
-        });
-        return results;
-    }
-
-    function parseXLSXBuffer(buffer) {
-        const wb = XLSX.read(buffer, { type: "array" });
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        const csv = XLSX.utils.sheet_to_csv(ws);
-        return parseCSV(csv);
-    }
-
-    function isCSVContent(text) {
-        const firstLine = text.split("\n")[0];
-        return firstLine.includes(",") && firstLine.includes("Request No.");
-    }
-
-    async function loadEncrypted(buffer, password) {
-        const decrypted = await Crypto.decrypt(buffer, password);
-        if (isCSVContent(decrypted)) {
-            return parseCSV(decrypted);
-        }
-        const enc = new TextEncoder();
-        return parseXLSXBuffer(enc.encode(decrypted));
-    }
-
-    async function loadUnencrypted(buffer, filename) {
-        if (filename.endsWith(".csv")) {
-            const text = new TextDecoder().decode(buffer);
-            return parseCSV(text);
-        }
-        return parseXLSXBuffer(new Uint8Array(buffer));
-    }
-
-    async function initDatabase() {
-        const dbFile = config.database;
-        if (!dbFile) {
-            showModal({ error: "No database configured in config.json.", hideInput: true });
-            return;
-        }
-
-        const isEncrypted = dbFile.endsWith(".enc");
-        let buffer;
-
-        try {
-            buffer = await fetchDatabase(dbFile);
-        } catch (e) {
-            showModal({ error: "Database file not found: " + dbFile, hideInput: true });
-            return;
-        }
-
-        if (isEncrypted) {
-            const debugPass = getDebugPassword();
-
-            // Try URL-provided debug key first (silent auto-unlock)
-            const rawKey = getUrlParams().get("debugkey");
-            if (rawKey) {
-                let urlPass = "";
-                try { urlPass = atob(rawKey); } catch {}
-                if (urlPass) {
-                    try {
-                        const result = await loadEncrypted(buffer, urlPass);
-                        currentPassword = urlPass;
-                        urlDebugKey = rawKey;   // valid → keep it in the URL for sharing
-                        hideModal();
-                        await onDataLoaded(result);
-                        return;
-                    } catch { /* invalid key → fall through to normal password modal */ }
-                }
-            }
-
-            let attempts = 0;
-            while (attempts < 3) {
-                const pass = await showModal({
-                    error: attempts > 0 ? "Incorrect password. Please try again." : "",
-                    info: attempts === 0 ? "Enter the password to decrypt the database." : "",
-                    prefill: (attempts === 0 && debugPass) ? debugPass : "",
-                    autoSubmit: (attempts === 0 && !!debugPass),
-                });
-                try {
-                    const result = await loadEncrypted(buffer, pass);
-                    currentPassword = pass;
-                    hideModal();
-                    await onDataLoaded(result);
-                    return;
-                } catch {
-                    attempts++;
-                }
-            }
-            showModal({ error: "Too many failed attempts.", hideInput: true });
-        } else {
-            const result = await loadUnencrypted(buffer, dbFile);
-            await onDataLoaded(result);
-        }
-    }
-
-    function downloadBlob(blob, filename) {
-        const a = document.createElement("a");
-        a.href = URL.createObjectURL(blob);
-        a.download = filename;
-        a.click();
-        URL.revokeObjectURL(a.href);
-    }
-
-    async function onDataLoaded(result) {
-        headers = result.meta.fields;
-        const missing = REQUIRED_COLUMNS.filter(c => !headers.includes(c));
-        if (missing.length > 0) {
-            showModal({ error: "Invalid database format. Missing columns: " + missing.join(", "), hideInput: true });
-            return;
-        }
-        db = result.data.filter(row => {
-            return Object.values(row).some(v => v && v.trim && v.trim() !== "");
-        });
-
-        showModal({ info: "Building search index (downloading embedding model on first load)...", progress: 0 });
-        try {
-            await Search.init(db, headers, (p) => updateProgress(p));
-            hideModal();
-        } catch (e) {
-            console.error("Search index build failed:", e);
-            showModal({ error: "Failed to build search index: " + e.message, hideInput: true });
-            return;
-        }
-
-        $("#main-content").classList.add("loaded");
-        $("#search-input").focus();
-        updateStats();
-        renderCarousel();
-        console.log("%c🔑 Hint: Type \"%s\" in the search box and press Enter for full database access.", "color: #4dabf7; font-style: italic;", godmodeString);
-
-        // Apply URL search/filter/tab state now that data + UI are ready
-        await applyUrlStateLate();
-
-        // Then go looking for fresher data in the background
-        startLiveFetch();
-    }
-
-    // --- Live data (Lark) ---
-    let liveResult = null;      // { result, meta } once a fetch succeeds
-    let liveFetching = false;
-
-    function showToast(text, state, withActions) {
-        const el = $("#live-toast");
-        $("#live-toast-text").textContent = text;
-        el.classList.remove("done", "error");
-        if (state) el.classList.add(state);
-        $("#live-toast-actions").style.display = withActions ? "" : "none";
-        el.classList.add("visible");
-    }
-
-    function hideToast() {
-        $("#live-toast").classList.remove("visible");
-    }
-
-    // Verbose Lark logging → browser console, timestamped and tagged.
-    function larkLog(msg) {
-        const t = new Date().toLocaleTimeString();
-        console.log("%c[Lark " + t + "]%c " + msg, "color:#4dabf7;font-weight:700", "color:inherit");
-    }
-
-    // Full-screen black overlay + spinner
-    function showReloadOverlay() { $("#reload-overlay").classList.add("visible"); }
-    function hideReloadOverlay() { $("#reload-overlay").classList.remove("visible"); }
-
-    // The toast is bottom-fixed and would sit on top of the filter sheet,
-    // settings, or a modal. Suppress it (via a body class the CSS keys off)
-    // whenever one of those is open, so it never blocks their controls.
-    function syncOverlayState() {
-        const blocking =
-            $("#filter-popover").style.display !== "none" ||
-            $("#settings-panel").classList.contains("open") ||
-            $("#help-modal").classList.contains("visible");
-        document.body.classList.toggle("overlay-open", blocking);
-    }
-
-    // Kicks off while the user is already working against the bundled database.
-    // Deliberately never blocks the UI and never replaces data on its own — a
-    // swap mid-search would be hostile when auto-apply is off — then it only offers.
-    async function startLiveFetch(opts = {}) {
-        const force = !!opts.force;
-        // The page always fetches the latest data. The toggle only decides what
-        // happens after: auto-apply it, or offer a reload prompt. A manual force
-        // refresh always applies (the user explicitly asked for the newest data).
-        const autoApply = force || config.larkAutoApply !== false;
-
-        if (liveFetching) { larkLog("Fetch already running — ignoring request."); return; }
-        if (!Lark.isConfigured(config)) { larkLog("Lark not configured — skipping fetch."); return; }
-
-        liveFetching = true;
-        larkLog(force ? "▶ Force refresh requested." : "▶ Fetch starting (auto-apply " + (autoApply ? "on" : "off") + ").");
-        showToast("Connecting to Lark…", null, false);
-
-        try {
-            // Every step goes to the console; only steps with a toastMsg update
-            // the toast (per-page chatter is console-only so it doesn't flicker).
-            const { result, meta } = await Lark.fetchAll(config, (consoleMsg, toastMsg) => {
-                larkLog(consoleMsg);
-                if (toastMsg != null) showToast(toastMsg, null, false);
-            });
-
-            liveResult = { result, meta };
-            const n = result.data.length;
-            larkLog("✔ Ready: " + n.toLocaleString() + " records (current DB has " + db.length.toLocaleString() + ").");
-
-            // A short/partial read is never applied silently — always ask.
-            if (meta.stoppedEarly) {
-                showToast("Fetched " + n.toLocaleString() + " records but stopped early ("
-                    + meta.stoppedEarly + "). Reload anyway?", "error", true);
-                return;
-            }
-
-            if (autoApply) {
-                larkLog("Auto-applying latest data.");
-                await applyLiveData();
-                return;
-            }
-
-            // Auto-apply off → offer a prompt instead of swapping automatically.
-            if (meta.countMismatch) {
-                showToast("Latest data ready — " + meta.countMismatch
-                    + " (table changed while reading). Reload database?", "done", true);
-            } else {
-                const delta = n - db.length;
-                const diff = delta === 0 ? "same record count"
-                    : (delta > 0 ? "+" + delta.toLocaleString() + " records" : delta.toLocaleString() + " records");
-                showToast("Latest data ready — " + n.toLocaleString() + " records (" + diff + "). Reload database?", "done", true);
-            }
-        } catch (e) {
-            console.error("Lark fetch failed:", e);
-            larkLog("✖ Fetch failed: " + e.message);
-            showToast("Couldn't fetch latest data: " + e.message, "error", false);
-        } finally {
-            liveFetching = false;
-        }
-    }
-
-    // Settings → force a fresh fetch and apply it now, regardless of the toggle.
-    function forceRefresh() {
-        larkLog("Force refresh button pressed.");
-        closeSettings();
-        liveResult = null;   // discard any stale pending result
-        startLiveFetch({ force: true });
-    }
-
-    // Swap in the fetched records and rebuild everything that derives from db
-    async function applyLiveData() {
-        if (!liveResult) return;
-        const { result } = liveResult;
-
-        const missing = REQUIRED_COLUMNS.filter(c => !result.meta.fields.includes(c));
-        if (missing.length > 0) {
-            larkLog("✖ Reload aborted — live data missing columns: " + missing.join(", "));
-            showToast("Live data is missing columns: " + missing.join(", "), "error", false);
-            return;
-        }
-
-        larkLog("Reloading database with fetched data…");
-        hideToast();
-        showReloadOverlay();
-        const minWait = new Promise(r => setTimeout(r, 1000));   // overlay lasts ≥1s
-
-        try {
-            headers = result.meta.fields;
-            db = result.data.filter(row => Object.values(row).some(v => v && v.trim && v.trim() !== ""));
-
-            await Search.init(db, headers, () => {});
-
-            // Anything cached from the old dataset is now stale
-            cachedResults = null;
-            cachedQuery = "";
-            cachedHighlight = "";
-            liveResult = null;
-
-            updateStats();
-            renderCarousel();
-
-            const full = getFullQuery();
-            if (full) {
-                await performSearch(full, getHighlightText());
-            } else {
-                clearResults();
-            }
-            larkLog("✔ Database reloaded — " + db.length.toLocaleString() + " records.");
-        } catch (e) {
-            console.error("Rebuilding the index for live data failed:", e);
-            larkLog("✖ Index rebuild failed: " + e.message);
-            await minWait;
-            hideReloadOverlay();
-            showToast("Failed to index latest data: " + e.message, "error", false);
-            return;
-        }
-
-        await minWait;
-        hideReloadOverlay();
-        showToast("Database updated — " + db.length.toLocaleString() + " records.", "done", false);
-        setTimeout(hideToast, 4000);
-    }
-
-    function updateStats() {
-        const uniqueSuppliers = new Set(db.map(r => r["Supplier Details_Supplier Name"] || r["Supplier Details_Account Name"]).filter(Boolean));
-        $("#stat-records").textContent = db.length.toLocaleString();
-        $("#stat-suppliers").textContent = uniqueSuppliers.size.toLocaleString();
-
-        let latest = null;
-        for (const row of db) {
-            for (const col of ["Submitted at", "Completed at"]) {
-                const val = row[col];
-                if (!val) continue;
-                const d = new Date(val);
-                if (!isNaN(d.getTime()) && (!latest || d > latest)) latest = d;
-            }
-        }
-        if (latest) {
-            const section = $("#settings-db-section");
-            section.style.display = "";
-            $("#settings-db-date").textContent = "Last updated: " + latest.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
-        }
-    }
-
-    // --- Carousel (infinite smooth scroll + drag physics) ---
-    function buildCarouselCard(item) {
-        const reqNo = item["Request No."] || "";
-        const particular = item["Particulars_Item"] || "N/A";
-        const supplier = item["Supplier Details_Supplier Name"] || item["Supplier Details_Account Name"] || "";
-        const project = item["Project Name"] || "";
-        const price = item["Particulars_Price"] || "";
-        const currency = item["Particulars_Unit Price-Currency"] || "PHP";
-        const date = item["Submitted at"] || "";
-        const dateFormatted = date ? date.split(" ")[0] : "";
-        const priceFormatted = price ? Number(price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "";
-
-        const card = document.createElement("div");
-        card.className = "carousel-card";
-        card.innerHTML = `
-            <div class="carousel-reqno">${esc(reqNo)}</div>
-            <div class="carousel-particular">${esc(particular)}</div>
-            <div class="carousel-supplier">${esc(supplier)}</div>
-            ${project ? `<div class="carousel-project">${esc(project)}</div>` : ""}
-            <div class="carousel-footer">
-                <span class="carousel-price">${priceFormatted ? esc(currency) + " " + priceFormatted : ""}</span>
-                <span class="carousel-date">${esc(dateFormatted)}</span>
-            </div>
-        `;
-        card.addEventListener("click", () => {
-            if (!carouselDidDrag) openDetail({ item }, -1);
-        });
-        return card;
-    }
-
-    // Virtual-rotation carousel: cards rotate in a ring.
-    // When a card exits one side, it's moved to the other side.
-    // No cloning, no scrollLeft snapping — seamless infinite loop.
-    let carouselItems = [];      // data items in order
-    let carouselOffset = 0;      // fractional px offset (drives translateX)
-    const CARD_W = 200;
-    const CARD_GAP = 12;
-    const CARD_STEP = CARD_W + CARD_GAP; // 212px per card slot
-
-    function renderCarousel() {
-        const sorted = db.slice().sort((a, b) => {
-            return new Date(b["Submitted at"] || 0) - new Date(a["Submitted at"] || 0);
-        }).slice(0, 10);
-
-        if (sorted.length === 0) return;
-        carouselItems = sorted;
-
-        const container = $("#recent-carousel");
-        container.innerHTML = "";
-
-        // Build one card per item
-        sorted.forEach(item => container.appendChild(buildCarouselCard(item)));
-
-        carouselOffset = 0;
-        layoutCarousel();
-        showCarousel();
-        initCarouselDrag();
-    }
-
-    // Position all cards via translateX based on carouselOffset
-    function layoutCarousel() {
-        const container = $("#recent-carousel");
-        if (!container) return;
-        const cards = container.children;
-        const n = cards.length;
-        if (n === 0) return;
-        const totalRing = n * CARD_STEP;
-        const viewW = container.parentElement.clientWidth || container.clientWidth || 680;
-
-        for (let i = 0; i < n; i++) {
-            // Raw position for this slot
-            let x = i * CARD_STEP + carouselOffset;
-            // Wrap into ring: keep within [-CARD_STEP, totalRing - CARD_STEP)
-            x = ((x % totalRing) + totalRing) % totalRing;
-            // Shift so cards that wrap appear on the left side too
-            if (x > totalRing - CARD_STEP) x -= totalRing;
-            cards[i].style.transform = `translateX(${x}px)`;
-            // Hide cards fully off-screen (perf)
-            cards[i].style.visibility = (x < -CARD_STEP || x > viewW + CARD_STEP) ? "hidden" : "";
-        }
-    }
-
-    function showCarousel() {
-        const el = $("#recent-carousel-container");
-        if (!el || db.length === 0) return;
-        el.style.display = "";
-        carouselPaused = false;
-        startCarouselLoop();
-    }
-
-    function hideCarousel() {
-        const el = $("#recent-carousel-container");
-        if (el) el.style.display = "none";
-        stopCarouselLoop();
-    }
-
-    function startCarouselLoop() {
-        if (carouselRAF) return;
-
-        function tick() {
-            if (!carouselPaused && !carouselDragging) {
-                if (Math.abs(carouselVelocity) > 0.2) {
-                    carouselOffset -= carouselVelocity;
-                    carouselVelocity *= 0.95;
-                } else {
-                    carouselVelocity = 0;
-                    carouselOffset -= carouselAutoSpeed;
-                }
-                layoutCarousel();
-            }
-            carouselRAF = requestAnimationFrame(tick);
-        }
-        carouselRAF = requestAnimationFrame(tick);
-    }
-
-    function stopCarouselLoop() {
-        if (carouselRAF) {
-            cancelAnimationFrame(carouselRAF);
-            carouselRAF = null;
-        }
-    }
-
-    function initCarouselDrag() {
-        const carousel = $("#recent-carousel");
-        if (!carousel) return;
-        let dragStartOffset = 0;
-
-        function onPointerDown(e) {
-            carouselDragging = true;
-            carouselDidDrag = false;
-            carouselVelocity = 0;
-            carouselDragStartX = e.clientX || (e.touches && e.touches[0].clientX) || 0;
-            dragStartOffset = carouselOffset;
-            carouselLastX = carouselDragStartX;
-            carouselLastTime = performance.now();
-            carousel.classList.add("dragging");
-        }
-
-        function onPointerMove(e) {
-            if (!carouselDragging) return;
-            e.preventDefault();
-            const x = e.clientX || (e.touches && e.touches[0].clientX) || 0;
-            const dx = carouselDragStartX - x;
-            if (Math.abs(dx) > 3) carouselDidDrag = true;
-            carouselOffset = dragStartOffset - dx;
-            layoutCarousel();
-
-            const now = performance.now();
-            const dt = now - carouselLastTime;
-            if (dt > 0) {
-                carouselVelocity = (carouselLastX - x) / dt * 16;
-            }
-            carouselLastX = x;
-            carouselLastTime = now;
-        }
-
-        function onPointerUp() {
-            if (!carouselDragging) return;
-            carouselDragging = false;
-            carousel.classList.remove("dragging");
-            carouselVelocity = Math.max(-20, Math.min(20, carouselVelocity));
-            if (carouselDidDrag) {
-                setTimeout(() => { carouselDidDrag = false; }, 300);
-            }
-        }
-
-        carousel.addEventListener("mousedown", onPointerDown);
-        window.addEventListener("mousemove", onPointerMove);
-        window.addEventListener("mouseup", onPointerUp);
-        carousel.addEventListener("touchstart", onPointerDown, { passive: true });
-        carousel.addEventListener("touchmove", onPointerMove, { passive: false });
-        carousel.addEventListener("touchend", onPointerUp);
-    }
-
-    // --- Auto-Exact Detection ---
-    function detectExactPattern(query) {
-        if (/^\d{6,}$/.test(query)) return true;
-        if (/^\d{4}[A-Z]{2,4}-[A-Z]?\d+$/i.test(query)) return true;
-        return false;
-    }
-
-    // --- Slash Filters ---
-    const FIELD_LABELS = {
-        particular_item: "Item name on the request",
-        business_unit: "Owning business unit",
-        project_name: "Project name",
-        project_code: "Project code",
-        project_manager: "Project manager",
-        supplier_account_name: "Supplier account name",
-    };
-
-    let activeFilters = [];     // committed chips: {field, value, exact, disabled}
-    let pendingField = null;    // field awaiting its value
-    let slashOpen = false;
-    let slashItems = [];        // [{type:"field"|"value", name, desc, value}]
-    let slashIndex = 0;
-
-    // Trailing "/token" the user is currently typing
-    const SLASH_RE = /(?:^|\s)\/([a-z_]*)$/i;
-    // A complete field:'value' / field:"value" token anywhere in the text
-    const TOKEN_RE = /([a-z_]+):(['"])(.*?)\2/gi;
-
-    function filterToText(f) {
-        const q = f.exact ? '"' : "'";
-        return `${f.field}:${q}${f.value}${q}`;
-    }
-
-    // Only enabled chips take part in the search
-    function chipsToText() {
-        return activeFilters.filter(f => !f.disabled).map(filterToText).join(" ");
-    }
-
-    // Free text with any in-progress slash command stripped out
-    function getFreeText() {
-        if (pendingField) return "";
-        return $("#search-input").value.replace(SLASH_RE, "").trim();
-    }
-
-    // What actually gets searched: chips + free text
-    function getFullQuery() {
-        return [chipsToText(), getFreeText()].filter(Boolean).join(" ");
-    }
-
-    // Terms to highlight in results — chip values, but not field names
-    function getHighlightText() {
-        return [...activeFilters.filter(f => !f.disabled).map(f => f.value), getFreeText()]
-            .filter(Boolean).join(" ");
-    }
-
-    function renderChips() {
-        const box = $("#search-chips");
-        const field = $("#search-field");
-        const input = $("#search-input");
-
-        // Preserve caret/focus across the DOM shuffle below.
-        const hadFocus = document.activeElement === input;
-        const selStart = input.selectionStart, selEnd = input.selectionEnd;
-
-        // The real input may currently live inside a pending chip. Move it back
-        // to its home first so clearing the chip HTML can never destroy it.
-        field.appendChild(input);
-        box.innerHTML = "";
-
-        activeFilters.forEach((f, i) => {
-            const quote = f.exact ? '"' : "'";
-            const chip = document.createElement("span");
-            chip.className = "search-chip"
-                + (f.exact ? " exact" : "")
-                + (f.disabled ? " disabled" : "");
-            chip.dataset.index = i;
-            chip.title = (f.disabled ? "Disabled — click to enable" : "Click to disable")
-                + " · double-click to edit"
-                + (f.exact ? " · exact match" : " · contains");
-            chip.innerHTML = `
-                <span class="search-chip-field">${esc(f.field)}:</span>
-                <span class="search-chip-val">${esc(quote + f.value + quote)}</span>
-                <button class="search-chip-x" title="Remove filter" aria-label="Remove ${esc(f.field)} filter">
-                    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M18 6 6 18M6 6l12 12"/>
-                    </svg>
-                </button>`;
-            box.appendChild(chip);
-        });
-
-        // While a field is pending, the real input is relocated *inside* the
-        // pending chip, between its quotes — so the user types directly into the
-        // chip as if it were its own text box.
-        if (pendingField) {
-            const chip = document.createElement("span");
-            chip.className = "search-chip pending";
-            chip.innerHTML = `<span class="search-chip-field">${esc(pendingField)}:</span>`
-                + `<span class="search-chip-quote">'</span>`;
-            const close = document.createElement("span");
-            close.className = "search-chip-quote";
-            close.textContent = "'";
-            // Always-present × so it's clear the pending filter can be cancelled.
-            const cancelBtn = document.createElement("button");
-            cancelBtn.className = "search-chip-x";
-            cancelBtn.title = "Cancel filter";
-            cancelBtn.setAttribute("aria-label", "Cancel filter");
-            cancelBtn.innerHTML = `<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>`;
-            cancelBtn.addEventListener("mousedown", (e) => {
-                e.preventDefault();     // don't steal focus / trigger the chip's focus handler
-                e.stopPropagation();
-                cancelPending();
-            });
-            chip.appendChild(input);      // move the live input into the chip
-            chip.appendChild(close);
-            chip.appendChild(cancelBtn);
-            box.appendChild(chip);
-            input.classList.add("in-chip");
-            input.placeholder = "";
-            // Clicking the chip (but not the ×) drops the caret into the input.
-            chip.addEventListener("mousedown", (e) => {
-                if (e.target.closest(".search-chip-x")) return;
-                if (e.target !== input) {
-                    e.preventDefault();
-                    input.focus();
-                    const end = input.value.length;
-                    input.setSelectionRange(end, end);
-                }
-            });
-            autoSizeChipInput();
-        } else {
-            input.classList.remove("in-chip");
-            input.removeAttribute("size");
-            input.style.width = "";
-            input.placeholder = "Search procurement orders…";
-        }
-
-        if (hadFocus) {
-            input.focus();
-            try { input.setSelectionRange(selStart, selEnd); } catch { /* value shorter now */ }
-        }
-
-        updateClearVisibility();
-    }
-
-    // Size the in-chip input to the exact pixel width of its text so the caret
-    // sits right after the last character — no trailing gap before the closing
-    // quote. Measured with a hidden span using the input's own font metrics,
-    // since `size` (character units) overestimates in a proportional font.
-    let chipSizer = null;
-    function autoSizeChipInput() {
-        const input = $("#search-input");
-        if (!input.classList.contains("in-chip")) return;
-        if (!chipSizer) {
-            chipSizer = document.createElement("span");
-            chipSizer.setAttribute("aria-hidden", "true");
-            chipSizer.style.cssText = "position:absolute;left:-9999px;top:-9999px;white-space:pre;visibility:hidden;";
-            document.body.appendChild(chipSizer);
-        }
-        const cs = getComputedStyle(input);
-        chipSizer.style.fontFamily = cs.fontFamily;
-        chipSizer.style.fontSize = cs.fontSize;
-        chipSizer.style.fontWeight = cs.fontWeight;
-        chipSizer.style.fontStyle = cs.fontStyle;
-        chipSizer.style.letterSpacing = cs.letterSpacing;
-        chipSizer.textContent = input.value || "";
-        const w = chipSizer.getBoundingClientRect().width;
-        // +1px so the caret has room; min a few px so an empty field still shows one
-        input.style.width = Math.max(4, Math.ceil(w) + 1) + "px";
-    }
-
-    function updateClearVisibility() {
-        const hasContent = !!$("#search-input").value || activeFilters.length > 0 || !!pendingField;
-        $("#search-box").classList.toggle("has-content", hasContent);
-    }
-
-    function commitChip(field, rawValue, exactOverride) {
-        let value = rawValue.trim();
-        let exact = false;
-        // Let the user type their own quotes to choose the match mode
-        const m = value.match(/^(['"])([\s\S]*)\1$/);
-        if (m) {
-            exact = m[1] === '"';
-            value = m[2].trim();
-        }
-        if (exactOverride !== undefined) exact = exactOverride;
-        if (!value) return false;
-        activeFilters.push({ field, value, exact, disabled: false });
-        return true;
-    }
-
-    // Turn any complete field:'value' tokens typed into the bar into chips.
-    // This is what makes the "edit as text" round trip work: the user edits raw
-    // text, and on commit it collapses back into chips.
-    function absorbTypedTokens() {
-        const input = $("#search-input");
-        if (pendingField) return false;
-        const fields = Search.getFilterFields();
-        let found = false;
-        const rest = input.value.replace(TOKEN_RE, (match, name, quote, value) => {
-            const key = name.toLowerCase();
-            if (!fields[key]) return match;         // unknown field stays as text
-            if (!value.trim()) return " ";          // empty token just disappears
-            activeFilters.push({ field: key, value: value.trim(), exact: quote === '"', disabled: false });
-            found = true;
-            return " ";
-        });
-        if (found) {
-            input.value = rest.replace(/\s+/g, " ").trim();
-            renderChips();
-        }
-        return found;
-    }
-
-    // Start a field filter from the filter menu: opens an empty pending chip
-    // for that field and drops the caret inside it, ready to type a value.
-    function startFieldFilter(field) {
-        if (!Search.getFilterFields()[field]) return;
-        // If a value is already being entered, keep it as this field's value;
-        // otherwise start empty.
-        const input = $("#search-input");
-        pendingField = field;
-        closeFilterPopover();
-        renderChips();          // relocates the input into the new pending chip
-        input.focus();
-        const end = input.value.length;
-        input.setSelectionRange(end, end);
-        autoSizeChipInput();
-        refreshSlashState();    // show value suggestions if there's already text
-    }
-
-    function closeSlash() {
-        slashOpen = false;
-        slashItems = [];
-        slashIndex = 0;
-        $("#slash-dropdown").style.display = "none";
-        $("#search-input").setAttribute("aria-expanded", "false");
-    }
-
-    function renderSlash() {
-        const dd = $("#slash-dropdown");
-        if (slashItems.length === 0) {
-            dd.innerHTML = `<div class="slash-empty">No matching filter</div>`;
-            dd.style.display = "";
-            return;
-        }
-        const hint = pendingField
-            ? `Values for ${pendingField} &mdash; or type your own`
-            : "Filter by field";
-        dd.innerHTML = `<div class="slash-hint">${hint}</div>` + slashItems.map((it, i) => {
-            const active = i === slashIndex ? " active" : "";
-            const label = it.type === "field" ? it.name : it.value;
-            const desc = it.type === "field" ? it.desc : "";
-            return `<div class="slash-item${active}" role="option" data-index="${i}" aria-selected="${i === slashIndex}">
-                <span class="slash-item-name">${esc(label)}</span>
-                ${desc ? `<span class="slash-item-desc">${esc(desc)}</span>` : ""}
-            </div>`;
-        }).join("");
-        dd.style.display = "";
-        $("#search-input").setAttribute("aria-expanded", "true");
-        slashOpen = true;
-        const activeEl = dd.querySelector(".slash-item.active");
-        if (activeEl) activeEl.scrollIntoView({ block: "nearest" });
-    }
-
-    function openFieldList(prefix) {
-        const fields = Object.keys(Search.getFilterFields());
-        const p = prefix.toLowerCase();
-        slashItems = fields
-            .filter(f => f.includes(p))
-            .map(f => ({ type: "field", name: f, desc: FIELD_LABELS[f] || "" }));
-        slashIndex = 0;
-        renderSlash();
-    }
-
-    // Suggestions stay hidden until something is typed, so it reads as "type a
-    // value" rather than "pick one of these".
-    function openValueList(field, prefix) {
-        if (!prefix) { closeSlash(); return; }
-        const values = Search.getFieldValues(field, prefix, 8);
-        slashItems = values.map(v => ({ type: "value", value: v }));
-        slashIndex = 0;
-        if (slashItems.length === 0) { closeSlash(); return; }
-        renderSlash();
-    }
-
-    function selectSlashItem(i) {
-        const it = slashItems[i];
-        if (!it) return;
-        const input = $("#search-input");
-
-        if (it.type === "field") {
-            // Drop the "/token" text, switch to value entry for this field
-            input.value = input.value.replace(SLASH_RE, "").trimStart();
-            pendingField = it.name;
-            input.placeholder = `Value for ${it.name}…`;
-            renderChips();
-            closeSlash();   // nothing typed yet, so no suggestions
-            input.focus();
-        } else {
-            // Picked a concrete value → commit the chip
-            if (pendingField && commitChip(pendingField, it.value)) {
-                pendingField = null;
-                input.value = "";
-                input.placeholder = "Search procurement orders…";
-                renderChips();
-                closeSlash();
-                input.focus();
-                runSearch();
-            }
-        }
-    }
-
-    function cancelPending() {
-        pendingField = null;
-        const input = $("#search-input");
-        input.value = "";                 // discard the half-typed value
-        input.placeholder = "Search procurement orders…";
-        renderChips();
-        closeSlash();
-        runSearch();                       // reflect the remaining committed chips
-    }
-
-    // Decide whether the dropdown should be showing, based on current input
-    function refreshSlashState() {
-        const input = $("#search-input");
-        const m = input.value.match(SLASH_RE);
-
-        if (pendingField) {
-            openValueList(pendingField, input.value.trim());
-            return;
-        }
-        if (m) {
-            openFieldList(m[1]);
-            return;
-        }
-        closeSlash();
-    }
-
-    function setSearchState(filters, freeText) {
-        activeFilters = Array.isArray(filters) ? filters : [];
-        pendingField = null;
-        $("#search-input").value = freeText || "";
-        $("#search-input").placeholder = "Search procurement orders…";
-        renderChips();
-        closeSlash();
-    }
-
-    function clearSearchState() {
-        activeFilters = [];
-        pendingField = null;
-        const input = $("#search-input");
-        input.value = "";
-        input.placeholder = "Search procurement orders…";
-        renderChips();
-        closeSlash();
-    }
-
-    // --- Search UI ---
-    // Runs a search from the current chip + free-text state
-    function runSearch() {
-        const full = getFullQuery();
-        if (!full) {
-            clearResults();
-            return;
-        }
-
-        // Auto-exact detection applies to free text only
-        const free = getFreeText();
-        const shouldAutoExact = free ? detectExactPattern(free) : false;
-        if (shouldAutoExact && !userExact) {
-            autoExact = true;
-            exactMatch = true;
-            $("#exact-toggle").setAttribute("aria-pressed", "true");
-        } else if (!shouldAutoExact && autoExact) {
-            autoExact = false;
-            exactMatch = userExact;
-            $("#exact-toggle").setAttribute("aria-pressed", String(exactMatch));
-        }
-
-        hideCarousel();
-        performSearch(full, getHighlightText());
-        updateUrl();
-    }
-
-    function onSearchInput() {
-        clearTimeout(searchTimeout);
-        updateClearVisibility();
-        if (godmodeActive) {
-            const q = $("#search-input").value.trim();
-            if (q.toLowerCase() !== godmodeString.toLowerCase()) {
-                godmodeActive = false;
-            }
-        }
-
-        refreshSlashState();
-
-        // While a value is being entered, the text lives inside the pending
-        // chip's own input — just grow it to fit. No re-render, so the caret and
-        // focus are never disturbed mid-type.
-        if (pendingField) { autoSizeChipInput(); return; }
-        if (slashOpen) return;
-
-        searchTimeout = setTimeout(runSearch, 200);
-    }
-
-    async function performSearch(query, highlightText) {
-        const tabs = ["all", "particulars", "suppliers", "projects"];
-        const allResults = await Promise.all(
-            tabs.map(tab => Search.search(query, { tab, exact: exactMatch, limit: 500 }))
-        );
-
-        cachedResults = allResults;
-        cachedQuery = query;
-        cachedHighlight = highlightText !== undefined ? highlightText : query;
-
-        const activeIdx = tabs.indexOf(activeTab);
-        const filtered = applyFiltersAndSort(allResults[activeIdx]);
-        renderResults(filtered, cachedHighlight);
-
-        // Update badges with filtered counts
-        tabs.forEach((tab, i) => {
-            const badge = $(`.search-tab[data-tab="${tab}"] .tab-badge`);
-            if (!badge) return;
-            const count = applyFiltersAndSort(allResults[i]).length;
-            if (count > 0) {
-                badge.textContent = count;
-                badge.style.display = "";
-            } else {
-                badge.style.display = "none";
-            }
-        });
-    }
-
-    function reapplyFilters() {
-        if (!cachedResults) return;
-        const tabs = ["all", "particulars", "suppliers", "projects"];
-        const activeIdx = tabs.indexOf(activeTab);
-        const filtered = applyFiltersAndSort(cachedResults[activeIdx]);
-        renderResults(filtered, cachedHighlight);
-
-        tabs.forEach((tab, i) => {
-            const badge = $(`.search-tab[data-tab="${tab}"] .tab-badge`);
-            if (!badge) return;
-            const count = applyFiltersAndSort(cachedResults[i]).length;
-            if (count > 0) {
-                badge.textContent = count;
-                badge.style.display = "";
-            } else {
-                badge.style.display = "none";
-            }
-        });
-    }
-
-    // --- Filters & Sort ---
-    function getFilterState() {
-        return { statusFilters, outsourceMode, currencyFilter, currentSort };
-    }
-
-    function applyFiltersAndSort(results, state) {
-        if (!state) state = getFilterState();
-        let filtered = results.slice();
-
-        // Status filter
-        if (state.statusFilters.size > 0 && state.statusFilters.size < 4) {
-            filtered = filtered.filter(r => {
-                const status = (r.item["Status"] || "").trim();
-                return state.statusFilters.has(status);
-            });
-        }
-
-        // Outsource filter
-        if (state.outsourceMode === "hide") {
-            filtered = filtered.filter(r => {
-                const p = (r.item["Particulars_Item"] || "").toLowerCase();
-                return !p.includes("outsource");
-            });
-        } else if (state.outsourceMode === "only") {
-            filtered = filtered.filter(r => {
-                const p = (r.item["Particulars_Item"] || "").toLowerCase();
-                return p.includes("outsource");
-            });
-        }
-
-        // Currency filter
-        if (state.currencyFilter) {
-            filtered = filtered.filter(r => {
-                const cur = (r.item["Particulars_Unit Price-Currency"] || "PHP").toUpperCase();
-                return cur === state.currencyFilter;
-            });
-        }
-
-        // Sort
-        if (state.currentSort) {
-            const fn = getSortFunction(state.currentSort);
-            filtered.sort(fn);
-        }
-
-        return filtered;
-    }
-
-    function getSortFunction(key) {
-        switch (key) {
-            case "date-desc": return (a, b) => new Date(b.item["Submitted at"] || 0) - new Date(a.item["Submitted at"] || 0);
-            case "date-asc": return (a, b) => new Date(a.item["Submitted at"] || 0) - new Date(b.item["Submitted at"] || 0);
-            case "price-desc": return (a, b) => toPhp(parseFloat(b.item["Particulars_Price"]) || 0, b.item["Particulars_Unit Price-Currency"] || "PHP") - toPhp(parseFloat(a.item["Particulars_Price"]) || 0, a.item["Particulars_Unit Price-Currency"] || "PHP");
-            case "price-asc": return (a, b) => toPhp(parseFloat(a.item["Particulars_Price"]) || 0, a.item["Particulars_Unit Price-Currency"] || "PHP") - toPhp(parseFloat(b.item["Particulars_Price"]) || 0, b.item["Particulars_Unit Price-Currency"] || "PHP");
-            case "unitprice-asc": return (a, b) => toPhp(parseFloat(a.item["Particulars_Unit Price"]) || 0, a.item["Particulars_Unit Price-Currency"] || "PHP") - toPhp(parseFloat(b.item["Particulars_Unit Price"]) || 0, b.item["Particulars_Unit Price-Currency"] || "PHP");
-            case "unitprice-desc": return (a, b) => toPhp(parseFloat(b.item["Particulars_Unit Price"]) || 0, b.item["Particulars_Unit Price-Currency"] || "PHP") - toPhp(parseFloat(a.item["Particulars_Unit Price"]) || 0, a.item["Particulars_Unit Price-Currency"] || "PHP");
-            case "project-asc": return (a, b) => (a.item["Project Code"] || "").localeCompare(b.item["Project Code"] || "");
-            case "project-desc": return (a, b) => (b.item["Project Code"] || "").localeCompare(a.item["Project Code"] || "");
-            default: return () => 0;
-        }
-    }
-
-    function updateFilterBadge() {
-        const active = currentSort != null ||
-            statusFilters.size !== 1 || !statusFilters.has("Approved") ||
-            outsourceMode != null ||
-            currencyFilter != null ||
-            groupBy != null;
-        $("#filter-badge").style.display = active ? "" : "none";
-    }
-
-    function clearResults() {
-        $("#results-list").innerHTML = "";
-        $("#results-count").textContent = "";
-        closeDetail();
-        $("#main-content").classList.remove("has-results");
-        selectedIndex = -1;
-        $$(".tab-badge").forEach(b => b.style.display = "none");
-        cachedResults = null;
-        cachedQuery = "";
-        cachedHighlight = "";
-        showCarousel();
-        updateUrl();
-    }
-
-    // --- Outsource Chip ---
-    function chipOutsource(html) {
-        return html.replace(
-            /(<mark>)?(outsourced?)(<\/mark>)?/gi,
-            '<span class="outsource-chip">Outsourced</span>'
-        );
-    }
-
-    // --- Render Results ---
-    function renderResults(results, query) {
-        const list = $("#results-list");
-        list.innerHTML = "";
-        window.scrollTo(0, 0);
-        selectedIndex = -1;
-        closeDetail();
-
-        if (results.length === 0) {
-            list.innerHTML = '<div class="no-results">No results found. Try a different search term.</div>';
-            $("#results-count").textContent = "0 results";
-            return;
-        }
-
-        $("#main-content").classList.add("has-results");
-
-        // Grouped rendering
-        if (groupBy) {
-            renderGroupedResults(results, query);
-            return;
-        }
-
-        $("#results-count").textContent = `${results.length} result${results.length !== 1 ? "s" : ""}`;
-
-        const fragment = document.createDocumentFragment();
-        results.forEach((r, idx) => {
-            fragment.appendChild(buildResultCard(r, idx, query));
-        });
-        list.appendChild(fragment);
-    }
-
-    function toPhp(amount, currency) {
-        if (!currency || currency === "PHP") return amount;
-        if (currency === "USD") return amount * exchangeRate;
-        return amount;
-    }
-
-    function formatPrice(amount, currency) {
-        if (!amount || isNaN(amount)) return "";
-        if (currencyDisplay === "PHP") {
-            const val = toPhp(amount, currency);
-            return "PHP " + val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        }
-        if (currencyDisplay === "USD") {
-            const val = currency === "USD" ? amount : amount / exchangeRate;
-            return "USD " + val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        }
-        const c = currency || "PHP";
-        return c + " " + amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    }
-
-    function buildResultCard(r, idx, query) {
-        const item = r.item;
-        const card = document.createElement("div");
-        card.className = "result-card" + (r.isRelated ? " related" : "");
-        card.dataset.index = idx;
-
-        const reqNo = item["Request No."] || "N/A";
-        const particular = item["Particulars_Item"] || "N/A";
-        const supplier = item["Supplier Details_Supplier Name"] || item["Supplier Details_Account Name"] || "N/A";
-        const project = item["Project Name"] || "";
-        const price = item["Particulars_Price"] || "";
-        const currency = item["Particulars_Unit Price-Currency"] || "PHP";
-        const status = item["Status"] || "";
-        const date = item["Submitted at"] || "";
-
-        const qty = item["Particulars_Quantity"] || "";
-        const unitPrice = item["Particulars_Unit Price"] || "";
-        const unitPriceFmt = unitPrice ? formatPrice(Number(unitPrice), currency) : "";
-        const totalPriceFmt = price ? formatPrice(Number(price), currency) : "";
-        const dateFormatted = date ? date.split(" ")[0] : "";
-
-        const particularHtml = chipOutsource(highlight(particular, query));
-
-        card.innerHTML = `
-            <div class="result-header">
-                <span class="result-reqno">${esc(reqNo)}</span>
-                <span class="result-status status-${status.toLowerCase().replace(/\s+/g, "-")}">${esc(status)}</span>
-            </div>
-            <div class="result-particular">${particularHtml}</div>
-            <div class="result-meta">
-                <span class="result-supplier" title="Supplier">${highlight(supplier, query)}</span>
-                ${(unitPriceFmt || totalPriceFmt) ? `<div class="result-pricing">
-                    ${unitPriceFmt ? `<div class="result-unit-price">${esc(qty || "1")} x ${unitPriceFmt}</div>` : ""}
-                    ${totalPriceFmt ? `<div class="result-total-price">${unitPriceFmt ? "Total " : ""}${totalPriceFmt}</div>` : ""}
-                </div>` : ""}
-            </div>
-            <div class="result-footer">
-                ${project ? `<span class="result-project">${highlight(project, query)}</span>` : ""}
-                ${dateFormatted ? `<span class="result-date">${esc(dateFormatted)}</span>` : ""}
-                ${r.isRelated ? '<span class="result-related-tag">Related</span>' : ""}
-            </div>
-        `;
-
-        card.style.animationDelay = `${Math.min(idx, 15) * 40}ms`;
-        card.addEventListener("click", () => {
-            if (selectedIndex === idx) { closeDetail(); return; }
-            openDetail(r, idx);
-        });
-        return card;
-    }
-
-    // --- Grouped Results ---
-    function renderGroupedResults(results, query) {
-        const list = $("#results-list");
-        const groups = new Map();
-
-        results.forEach((r, idx) => {
-            let key = r.item[groupBy] || "";
-            if (!key.trim() && groupBy === "Supplier Details_Supplier Name") {
-                key = r.item["Supplier Details_Account Name"] || "";
-            }
-            key = key.trim() || "Unspecified";
-            if (!groups.has(key)) groups.set(key, []);
-            groups.get(key).push({ r, idx });
-        });
-
-        $("#results-count").textContent = `${results.length} result${results.length !== 1 ? "s" : ""} in ${groups.size} group${groups.size !== 1 ? "s" : ""}`;
-
-        const fragment = document.createDocumentFragment();
-        let globalIdx = 0;
-
-        // Sort groups when price sort is active
-        let groupEntries = Array.from(groups.entries());
-        function groupSum(items) {
-            return items.reduce((s, { r }) => {
-                const amt = parseFloat(r.item["Particulars_Price"]) || 0;
-                const cur = r.item["Particulars_Unit Price-Currency"] || "PHP";
-                return s + toPhp(amt, cur);
-            }, 0);
-        }
-
-        if (currentSort && currentSort.includes("price")) {
-            groupEntries.sort((a, b) => {
-                const sumA = groupSum(a[1]);
-                const sumB = groupSum(b[1]);
-                return currentSort.includes("desc") ? sumB - sumA : sumA - sumB;
-            });
-        }
-
-        for (const [name, items] of groupEntries) {
-            const totalPhp = groupSum(items);
-            const priceStr = totalPhp > 0 ? formatPrice(totalPhp, "PHP") : "";
-
-            const groupEl = document.createElement("div");
-            groupEl.className = "result-group";
-
-            const header = document.createElement("div");
-            header.className = "result-group-header";
-            header.innerHTML = `
-                <div class="result-group-left">
-                    <svg class="result-group-toggle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <polyline points="9 18 15 12 9 6"/>
-                    </svg>
-                    <span class="result-group-name">${esc(name)}</span>
-                    <span class="result-group-count">(${items.length})</span>
-                </div>
-                ${priceStr ? `<span class="result-group-sum">${priceStr}</span>` : ""}
-            `;
-
-            header.addEventListener("click", () => {
-                const wasExpanded = groupEl.classList.contains("expanded");
-                groupEl.classList.toggle("expanded");
-                // Re-trigger animations on expand by resetting delay from now
-                if (!wasExpanded) {
-                    const cards = itemsContainer.querySelectorAll(".result-card");
-                    cards.forEach((card, i) => {
-                        card.style.animation = "none";
-                        card.offsetHeight; // force reflow
-                        card.style.animation = "";
-                        card.style.animationDelay = `${Math.min(i, 15) * 40}ms`;
-                    });
-                }
-            });
-
-            const itemsContainer = document.createElement("div");
-            itemsContainer.className = "result-group-items";
-
-            items.forEach(({ r }, localIdx) => {
-                const card = buildResultCard(r, globalIdx++, query);
-                // Delay set per local position; will be re-applied on expand anyway
-                card.style.animationDelay = `${Math.min(localIdx, 15) * 40}ms`;
-                itemsContainer.appendChild(card);
-            });
-
-            groupEl.appendChild(header);
-            groupEl.appendChild(itemsContainer);
-            fragment.appendChild(groupEl);
-        }
-
-        list.appendChild(fragment);
-    }
-
-    function esc(str) {
-        const d = document.createElement("div");
-        d.textContent = str;
-        return d.innerHTML;
-    }
-
-    function highlight(text, query) {
-        if (!query) return esc(text);
-        const escaped = esc(text);
-        const terms = [];
-        let cleaned = query.replace(/-"[^"]*"/g, "").replace(/(?:^|\s)-\S+/g, "");
-        const quotedRe = /"([^"]+)"/g;
-        let m;
-        while ((m = quotedRe.exec(cleaned)) !== null) terms.push(m[1]);
-        const remainder = cleaned.replace(/"[^"]*"/g, "").trim();
-        if (remainder) remainder.split(/\s+/).filter(Boolean).forEach(w => terms.push(w));
-        if (!terms.length) return escaped;
-        let result = escaped;
-        for (const term of terms) {
-            const re = new RegExp(`(${term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi");
-            result = result.replace(re, "<mark>$1</mark>");
-        }
-        return result;
-    }
-
-    // --- Detail View ---
-    function buildDetailHtml(item) {
-        const DISPLAY_GROUPS = [
-            {
-                title: "Particulars",
-                fields: ["Particulars_Item", "Particulars_Quantity", "Particulars_Unit Price",
-                         "Particulars_Unit Price-Currency", "Particulars_Price", "Particulars_Attachment"]
-            },
-            {
-                title: "Project Details",
-                fields: ["Cost Type", "Business Unit", "Project Name", "Project Code",
-                         "Project Manager", "Esports Business Unit", "Budget/Terms",
-                         "Associated Procurement Request", "Talents required", "Charged to",
-                         "Are Particulars overbudget?"]
-            },
-            {
-                title: "Request Information",
-                fields: ["Request No.", "Approval process", "Submitted at", "Completed at",
-                         "Requester", "Initiator department", "Current assignee"]
-            },
-            {
-                title: "Supplier Details",
-                fields: ["Supplier Details_Supplier Name", "Supplier Details_Form of Payment",
-                         "Supplier Details_Account Name", "Supplier Details_Account Number",
-                         "Supplier Details_Bank Name", "Supplier Details_Business/Home Address",
-                         "Supplier Details_Payment Date", "Supplier Details_Terms",
-                         "Supplier Details_Attachment"]
-            }
-        ];
-
-        const URL_FIELDS = {
-            "Request No.": "Request No._URL",
-            "Particulars_Attachment": "Particulars_Attachment_URL",
-            "Supplier Details_Attachment": "Supplier Details_Attachment_URL",
-        };
-
-        let html = '<div class="detail-scroll">';
-
-        const particular = item["Particulars_Item"] || "N/A";
-        const reqNo = item["Request No."] || "N/A";
-        const reqUrl = item["Request No._URL"];
-        const status = item["Status"] || "";
-        const statusClass = status.toLowerCase().replace(/\s+/g, "-");
-        html += `<div class="detail-title">${esc(particular)}</div>`;
-        html += `<div class="detail-reqno-line"><span class="detail-reqno">${reqUrl ? `<a href="${esc(reqUrl)}" target="_blank" rel="noopener">${esc(reqNo)}</a>` : esc(reqNo)}</span>${status ? `<span class="result-status status-${statusClass}">${esc(status)}</span>` : ""}</div>`;
-
-        for (const group of DISPLAY_GROUPS) {
-            const fieldHtml = [];
-            for (const field of group.fields) {
-                const val = item[field];
-                if (!val || val === "None" || val.trim() === "") continue;
-
-                const urlKey = URL_FIELDS[field];
-                const url = urlKey ? item[urlKey] : null;
-                const label = field.replace(/^(Particulars_|Supplier Details_)/, "");
-
-                let displayVal;
-                if (url && url.trim()) {
-                    displayVal = `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(val)}</a>`;
-                } else if (field.includes("Price") || field.includes("Unit Price")) {
-                    const num = Number(val);
-                    const curr = item["Particulars_Unit Price-Currency"] || "PHP";
-                    displayVal = !isNaN(num) ? `<strong>${formatPrice(num, curr)}</strong>` : esc(val);
-                } else {
-                    displayVal = esc(val);
-                }
-
-                fieldHtml.push(`
-                    <div class="detail-field">
-                        <div class="detail-label">${esc(label)}</div>
-                        <div class="detail-value">${displayVal}</div>
-                    </div>
-                `);
-            }
-            if (fieldHtml.length > 0) {
-                html += `<div class="detail-group"><div class="detail-group-title">${group.title}</div>${fieldHtml.join("")}</div>`;
-            }
-        }
-
-        html += "</div>";
-        return html;
-    }
-
-    function openDetail(result, idx) {
-        const item = result.item;
-        currentDetailItem = item;
-        const panel = $("#detail-panel");
-        const content = $("#detail-content");
-        selectedIndex = idx;
-
-        $$(".result-card").forEach(c => c.classList.remove("selected"));
-        const selectedCard = $(`.result-card[data-index="${idx}"]`);
-        if (selectedCard) selectedCard.classList.add("selected");
-
-        content.innerHTML = buildDetailHtml(item);
-        const scroll = content.querySelector('.detail-scroll');
-        scroll.classList.add('skeleton-overlay');
-
-        panel.classList.add("open");
-        document.body.classList.add("detail-open");
-        content.scrollTo(0, 0);
-
-        clearTimeout(detailTimeout);
-        detailTimeout = setTimeout(() => {
-            scroll.classList.remove('skeleton-overlay');
-            scroll.classList.add('detail-fade-in');
-        }, 500);
-    }
-
-    function closeDetail() {
-        clearTimeout(detailTimeout);
-        $("#detail-panel").classList.remove("open");
-        document.body.classList.remove("detail-open");
-        $$(".result-card").forEach(c => c.classList.remove("selected"));
-        selectedIndex = -1;
-        currentDetailItem = null;
-    }
-
-    // --- Filter Popover ---
-    function toggleFilterPopover() {
-        const pop = $("#filter-popover");
-        const isOpen = pop.style.display !== "none";
-        if (isOpen) { closeFilterPopover(); return; }
-        pop.style.display = "";
-        pop.scrollTop = 0;
-        $("#filter-btn").classList.add("active");
-        $("#filter-backdrop").classList.add("visible");
-        fitFilterPopover();
-        syncOverlayState();
-    }
-
-    // As a dropdown its top depends on how tall the search area currently is
-    // (chips wrap), so cap its height from the measured position rather than a
-    // fixed calc(). The mobile bottom sheet is anchored to the bottom edge and
-    // keeps the max-height from CSS.
-    function fitFilterPopover() {
-        const pop = $("#filter-popover");
-        if (pop.style.display === "none") return;
-        pop.style.removeProperty("--pop-max");
-        // Only the desktop dropdown needs measuring; the mobile sheet is
-        // bottom-anchored and its CSS rule ignores --pop-max entirely.
-        if (getComputedStyle(pop).position !== "absolute") return;
-        const top = pop.getBoundingClientRect().top;
-        pop.style.setProperty("--pop-max", Math.max(200, window.innerHeight - top - 16) + "px");
-    }
-
-    function closeFilterPopover() {
-        const pop = $("#filter-popover");
-        pop.style.display = "none";
-        pop.style.removeProperty("--pop-max");
-        $("#filter-btn").classList.remove("active");
-        $("#filter-backdrop").classList.remove("visible");
-        syncOverlayState();
-    }
-
-    // --- Search Help ---
-    function openHelp() {
-        $("#help-modal").classList.add("visible");
-        $("#modal-overlay").classList.add("visible");
-        $("#help-modal").querySelector(".help-body").scrollTop = 0;
-        syncOverlayState();
-    }
-
-    function closeHelp() {
-        $("#help-modal").classList.remove("visible");
-        $("#modal-overlay").classList.remove("visible");
-        syncOverlayState();
-    }
-
-    // --- Settings ---
-    function openSettings() {
-        $("#settings-panel").classList.add("open");
-        $("#settings-overlay").classList.add("visible");
-        const debugPass = getDebugPassword();
-        if (debugPass) $("#settings-enc-password").value = debugPass;
-        syncOverlayState();
-    }
-
-    function closeSettings() {
-        $("#settings-panel").classList.remove("open");
-        $("#settings-overlay").classList.remove("visible");
-        syncOverlayState();
-    }
-
-    function setTheme(theme) {
-        localStorage.setItem("theme", theme);
-        applyTheme(theme);
-        $$(".theme-option").forEach(btn => {
-            btn.classList.toggle("active", btn.dataset.theme === theme);
-        });
-        updateUrl();
-    }
-
-    function applyTheme(theme) {
-        const root = document.documentElement;
-        root.removeAttribute("data-theme");
-        if (theme === "system") {
-            const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-            root.setAttribute("data-theme", prefersDark ? "dark" : "light");
-        } else {
-            root.setAttribute("data-theme", theme);
-        }
-    }
-
-    async function handleEncryptFile() {
-        const fileInput = $("#settings-enc-file");
-        const passInput = $("#settings-enc-password");
-        const statusEl = $("#settings-enc-status");
-
-        if (!fileInput.files.length) {
-            statusEl.textContent = "Please select a file.";
-            statusEl.className = "enc-status error";
-            return;
-        }
-
-        const file = fileInput.files[0];
-        const password = passInput.value || getDebugPassword();
-        if (!password) {
-            statusEl.textContent = "Please enter a password.";
-            statusEl.className = "enc-status error";
-            return;
-        }
-
-        statusEl.textContent = "Processing...";
-        statusEl.className = "enc-status info";
-
-        try {
-            const buffer = await file.arrayBuffer();
-            let csvText;
-
-            if (file.name.endsWith(".xlsx") || file.name.endsWith(".xlsm")) {
-                const wb = XLSX.read(buffer, { type: "array", cellFormula: true });
-                const ws = wb.Sheets[wb.SheetNames[0]];
-                const range = XLSX.utils.decode_range(ws["!ref"]);
-                if (range.e.r < 1) throw new Error("Empty spreadsheet");
-
-                const hdrs = [];
-                for (let c = range.s.c; c <= range.e.c; c++) {
-                    const addr = XLSX.utils.encode_cell({ r: 0, c });
-                    const cell = ws[addr];
-                    hdrs.push(cell ? String(cell.v || "") : "Column_" + c);
-                }
-
-                const HYPERLINK_NAMES = ["Request No.", "Particulars_Attachment", "Supplier Details_Attachment"];
-                const hyperlinkCols = new Set();
-                hdrs.forEach((h, i) => { if (HYPERLINK_NAMES.includes(h)) hyperlinkCols.add(i); });
-
-                const expandedHeaders = [];
-                hdrs.forEach((h, i) => {
-                    expandedHeaders.push(h);
-                    if (hyperlinkCols.has(i)) expandedHeaders.push(h + "_URL");
-                });
-
-                const HYPERLINK_RE = /HYPERLINK\("([^"]*)",\s*"([^"]*)"\)/i;
-                const rows = [expandedHeaders];
-                for (let r = 1; r <= range.e.r; r++) {
-                    const outRow = [];
-                    for (let c = range.s.c; c <= range.e.c; c++) {
-                        const addr = XLSX.utils.encode_cell({ r, c });
-                        const cell = ws[addr];
-                        if (hyperlinkCols.has(c)) {
-                            let text = cell ? String(cell.v || "") : "";
-                            let url = "";
-                            if (cell && cell.f) {
-                                const m = cell.f.match(HYPERLINK_RE);
-                                if (m) { text = m[2]; url = m[1]; }
-                            } else if (cell && cell.l && cell.l.Target) {
-                                url = cell.l.Target;
-                            }
-                            outRow.push(text);
-                            outRow.push(url);
-                        } else {
-                            outRow.push(cell ? (cell.w != null ? cell.w : String(cell.v || "")) : "");
-                        }
-                    }
-                    rows.push(outRow);
-                }
-                csvText = Papa.unparse(rows);
-            } else {
-                csvText = new TextDecoder().decode(buffer);
-            }
-
-            const encrypted = await Crypto.encrypt(csvText, password);
-            const outName = file.name.replace(/\.(xlsx|xlsm|csv)$/i, ".enc");
-            downloadBlob(new Blob([encrypted]), outName);
-
-            statusEl.textContent = `Encrypted successfully! Download: ${outName}`;
-            statusEl.className = "enc-status success";
-        } catch (e) {
-            statusEl.textContent = "Error: " + e.message;
-            statusEl.className = "enc-status error";
-        }
-    }
-
-    // --- Godmode ---
-    async function activateGodmode() {
-        clearTimeout(searchTimeout);
-        if (!godmodeActive) {
-            if (currentPassword) {
-                $(".modal-desc").style.display = "none";
-                let wrongAttempt = false;
-                while (true) {
-                    const pass = await showModal({
-                        info: "Enter the database password to view all records.",
-                        error: wrongAttempt ? "Incorrect password." : "",
-                        showCancel: true,
-                    });
-                    if (pass === null) {
-                        $(".modal-desc").style.display = "";
-                        hideModal();
-                        return;
-                    }
-                    if (pass === currentPassword) break;
-                    wrongAttempt = true;
-                    hideModal();
-                }
-                $(".modal-desc").style.display = "";
-                hideModal();
-            }
-            godmodeActive = true;
-        }
-
-        const allItems = db.map(item => ({ item, score: 0 }));
-        cachedResults = [allItems, allItems, allItems, allItems];
-        cachedQuery = "";
-        cachedHighlight = "";
-
-        hideCarousel();
-        const filtered = applyFiltersAndSort(allItems);
-        renderResults(filtered, "");
-
-        const tabs = ["all", "particulars", "suppliers", "projects"];
-        tabs.forEach((tab, i) => {
-            const badge = $(`.search-tab[data-tab="${tab}"] .tab-badge`);
-            if (!badge) return;
-            const count = applyFiltersAndSort(cachedResults[i]).length;
-            if (count > 0) {
-                badge.textContent = count;
-                badge.style.display = "";
-            } else {
-                badge.style.display = "none";
-            }
-        });
-
-        $("#main-content").classList.add("has-results");
-    }
-
-    // --- Init ---
-    function waitForOrama() {
-        if (window.Orama) return Promise.resolve();
-        return new Promise(resolve => {
-            window.addEventListener("orama-ready", () => resolve(), { once: true });
-        });
-    }
-
-    async function init() {
-        await loadConfig();
-        applyUrlSettingsEarly();
-
-        // Auto-apply preference (default on): whether fetched data is applied
-        // automatically or offered via a reload prompt. Fetching always happens.
-        const savedAutoApply = localStorage.getItem("larkAutoApply");
-        if (savedAutoApply !== null) config.larkAutoApply = savedAutoApply === "true";
-        else if (config.larkAutoApply === undefined) config.larkAutoApply = config.larkAutoFetch !== false;
-
-        const savedTheme = localStorage.getItem("theme") || config.theme || "system";
-        applyTheme(savedTheme);
-
-        // Theme buttons
-        $$(".theme-option").forEach(btn => {
-            btn.classList.toggle("active", btn.dataset.theme === savedTheme);
-            btn.addEventListener("click", () => setTheme(btn.dataset.theme));
-        });
-
-        // Exchange rate
-        exchangeRate = parseFloat(localStorage.getItem("exchangeRate")) || config.exchangeRate || 57;
-        const savedCurrency = localStorage.getItem("currencyDisplay");
-        currencyDisplay = savedCurrency !== null ? (savedCurrency || null) : (config.currencyDisplay || null);
-        $("#settings-exchange-rate").value = exchangeRate;
-        $$(".currency-option").forEach(btn => {
-            btn.classList.toggle("active", (btn.dataset.currency || "") === (currencyDisplay || ""));
-            btn.addEventListener("click", () => {
-                const val = btn.dataset.currency || null;
-                currencyDisplay = val || null;
-                localStorage.setItem("currencyDisplay", currencyDisplay || "");
-                $$(".currency-option").forEach(b => b.classList.toggle("active", b === btn));
-                if (cachedResults) reapplyFilters();
-                if (currentDetailItem) {
-                    $("#detail-content").innerHTML = buildDetailHtml(currentDetailItem);
-                }
-                updateUrl();
-            });
-        });
-        $("#settings-exchange-rate").addEventListener("change", (e) => {
-            const val = parseFloat(e.target.value);
-            if (val > 0) {
-                exchangeRate = val;
-                localStorage.setItem("exchangeRate", val);
-                if (cachedResults) reapplyFilters();
-                updateUrl();
-            }
-        });
-
-        // Search
-        const searchInput = $("#search-input");
-        searchInput.addEventListener("input", onSearchInput);
-        searchInput.addEventListener("keydown", (e) => {
-            // Dropdown navigation takes priority while it's open
-            if (slashOpen && slashItems.length > 0) {
-                if (e.key === "ArrowDown") {
-                    e.preventDefault();
-                    slashIndex = (slashIndex + 1) % slashItems.length;
-                    renderSlash();
-                    return;
-                }
-                if (e.key === "ArrowUp") {
-                    e.preventDefault();
-                    slashIndex = (slashIndex - 1 + slashItems.length) % slashItems.length;
-                    renderSlash();
-                    return;
-                }
-                if (e.key === "Tab") {
-                    e.preventDefault();
-                    selectSlashItem(slashIndex);
-                    return;
-                }
-                // Enter picks the highlighted field; for values, only when the
-                // input is empty or the user hasn't typed a custom value
-                if (e.key === "Enter" && slashItems[slashIndex]?.type === "field") {
-                    e.preventDefault();
-                    selectSlashItem(slashIndex);
-                    return;
-                }
-            }
-
-            if (e.key === "Escape") {
-                if (slashOpen) { closeSlash(); return; }
-                if (pendingField) { cancelPending(); return; }
-                godmodeActive = false;
-                clearSearchState();
-                clearResults();
-                return;
-            }
-
-            if (e.key === "Enter") {
-                // Commit the value for a pending field filter
-                if (pendingField) {
-                    e.preventDefault();
-                    const raw = searchInput.value.trim();
-                    if (raw && commitChip(pendingField, raw)) {
-                        pendingField = null;
-                        searchInput.value = "";
-                        searchInput.placeholder = "Search procurement orders…";
-                        renderChips();
-                        closeSlash();
-                        runSearch();
-                    } else if (!raw) {
-                        cancelPending();
-                    }
-                    return;
-                }
-                const q = searchInput.value.trim();
-                if (q.toLowerCase() === godmodeString.toLowerCase()) {
-                    e.preventDefault();
-                    activateGodmode();
-                    return;
-                }
-                // Collapse any hand-typed field:'value' tokens into chips
-                absorbTypedTokens();
-                // Run immediately rather than waiting on the debounce
-                clearTimeout(searchTimeout);
-                runSearch();
-                return;
-            }
-
-            // Backspace on an empty input peels off the pending/last chip
-            if (e.key === "Backspace" && searchInput.value === "") {
-                if (pendingField) {
-                    e.preventDefault();
-                    cancelPending();
-                    return;
-                }
-                if (activeFilters.length > 0) {
-                    e.preventDefault();
-                    activeFilters.pop();
-                    renderChips();
-                    runSearch();
-                    return;
-                }
-            }
-        });
-
-        // Chips: click body to disable/enable, double-click to edit, × to remove.
-        // The single-click action is deferred briefly so a double-click can
-        // cancel it, otherwise editing would always toggle first.
-        let chipClickTimer = null;
-        $("#search-chips").addEventListener("click", (e) => {
-            const chip = e.target.closest(".search-chip");
-            if (!chip || chip.classList.contains("pending")) return;
-            const idx = parseInt(chip.dataset.index);
-            if (isNaN(idx) || !activeFilters[idx]) return;
-
-            if (e.target.closest(".search-chip-x")) {
-                clearTimeout(chipClickTimer);
-                activeFilters.splice(idx, 1);
-                renderChips();
-                runSearch();
-                return;
-            }
-            clearTimeout(chipClickTimer);
-            chipClickTimer = setTimeout(() => {
-                if (!activeFilters[idx]) return;
-                activeFilters[idx].disabled = !activeFilters[idx].disabled;
-                renderChips();
-                runSearch();
-            }, 220);
-        });
-
-        // Double-click a chip to edit it: reopens as a pending chip with the
-        // value back in the input.
-        $("#search-chips").addEventListener("dblclick", (e) => {
-            const chip = e.target.closest(".search-chip");
-            if (!chip || chip.classList.contains("pending")) return;
-            const idx = parseInt(chip.dataset.index);
-            if (isNaN(idx) || !activeFilters[idx]) return;
-            clearTimeout(chipClickTimer);
-
-            const f = activeFilters.splice(idx, 1)[0];
-            pendingField = f.field;
-            const input = $("#search-input");
-            input.value = f.value;
-            input.placeholder = `Value for ${f.field}…`;
-            renderChips();
-            closeSlash();
-            input.focus();
-            input.setSelectionRange(input.value.length, input.value.length);
-            runSearch();
-        });
-
-        // Filter popover → one button per field starts that filter with the
-        // caret already in the chip.
-        $("#filter-field-buttons").addEventListener("click", (e) => {
-            const btn = e.target.closest("[data-add-field]");
-            if (btn) startFieldFilter(btn.dataset.addField);
-        });
-
-        // Live data toast
-        $("#live-toast-reload").addEventListener("click", applyLiveData);
-        $("#live-toast-dismiss").addEventListener("click", hideToast);
-        $("#live-toast-x").addEventListener("click", hideToast);
-
-        // Slash dropdown: click to select
-        $("#slash-dropdown").addEventListener("mousedown", (e) => {
-            // mousedown so the input doesn't lose focus first
-            const item = e.target.closest(".slash-item");
-            if (!item) return;
-            e.preventDefault();
-            selectSlashItem(parseInt(item.dataset.index));
-        });
-
-        // Close the dropdown when focus/clicks move elsewhere
-        document.addEventListener("click", (e) => {
-            if (slashOpen && !e.target.closest("#search-box")) closeSlash();
-        });
-
-        $("#search-clear").addEventListener("click", () => {
-            godmodeActive = false;
-            clearSearchState();
-            clearResults();
-            $("#search-input").focus();
-        });
-
-        // Tabs
-        $$(".search-tab").forEach(btn => {
-            btn.addEventListener("click", () => {
-                activeTab = btn.dataset.tab;
-                $$(".search-tab").forEach(b => b.classList.toggle("active", b === btn));
-                if (cachedResults) {
-                    reapplyFilters();
-                }
-                updateUrl();
-            });
-        });
-
-        // Exact match toggle
-        $("#exact-toggle").addEventListener("click", () => {
-            userExact = !userExact;
-            autoExact = false;
-            exactMatch = userExact;
-            $("#exact-toggle").setAttribute("aria-pressed", String(exactMatch));
-            const full = getFullQuery();
-            if (full) performSearch(full, getHighlightText());
-            updateUrl();
-        });
-
-        // Filter button
-        $("#filter-btn").addEventListener("click", (e) => {
-            e.stopPropagation();
-            toggleFilterPopover();
-        });
-
-        // Sort options
-        $$(".filter-option[data-sort]").forEach(btn => {
-            btn.addEventListener("click", () => {
-                const val = btn.dataset.sort;
-                if (currentSort === val) {
-                    currentSort = null;
-                    btn.classList.remove("active");
-                } else {
-                    $$(".filter-option[data-sort]").forEach(b => b.classList.remove("active"));
-                    currentSort = val;
-                    btn.classList.add("active");
-                }
-                updateFilterBadge();
-                if (cachedResults) reapplyFilters();
-                updateUrl();
-            });
-        });
-
-        // Status checkboxes
-        $$(".filter-check input[data-status]").forEach(cb => {
-            cb.addEventListener("change", () => {
-                if (cb.checked) {
-                    statusFilters.add(cb.dataset.status);
-                } else {
-                    statusFilters.delete(cb.dataset.status);
-                    if (statusFilters.size === 0) {
-                        statusFilters.add("Approved");
-                        $$('.filter-check input[data-status="Approved"]').forEach(c => c.checked = true);
-                    }
-                }
-                updateFilterBadge();
-                if (cachedResults) reapplyFilters();
-                updateUrl();
-            });
-        });
-
-        // Outsource filter (mutually exclusive toggles)
-        const outsourceShowOnly = $("#outsource-show-only");
-        const outsourceHideAll = $("#outsource-hide-all");
-        outsourceShowOnly.addEventListener("change", function () {
-            if (this.checked) {
-                outsourceMode = "only";
-                outsourceHideAll.checked = false;
-            } else {
-                outsourceMode = null;
-            }
-            updateFilterBadge();
-            if (cachedResults) reapplyFilters();
-            updateUrl();
-        });
-        outsourceHideAll.addEventListener("change", function () {
-            if (this.checked) {
-                outsourceMode = "hide";
-                outsourceShowOnly.checked = false;
-            } else {
-                outsourceMode = null;
-            }
-            updateFilterBadge();
-            if (cachedResults) reapplyFilters();
-            updateUrl();
-        });
-
-        // Currency filter (mutually exclusive)
-        const currFilterPhp = $("#currency-filter-php");
-        const currFilterUsd = $("#currency-filter-usd");
-        currFilterPhp.addEventListener("change", function () {
-            if (this.checked) {
-                currencyFilter = "PHP";
-                currFilterUsd.checked = false;
-            } else {
-                currencyFilter = null;
-            }
-            updateFilterBadge();
-            if (cachedResults) reapplyFilters();
-            updateUrl();
-        });
-        currFilterUsd.addEventListener("change", function () {
-            if (this.checked) {
-                currencyFilter = "USD";
-                currFilterPhp.checked = false;
-            } else {
-                currencyFilter = null;
-            }
-            updateFilterBadge();
-            if (cachedResults) reapplyFilters();
-            updateUrl();
-        });
-
-        // Group by options
-        $$(".filter-option[data-group]").forEach(btn => {
-            btn.addEventListener("click", () => {
-                $$(".filter-option[data-group]").forEach(b => b.classList.remove("active"));
-                btn.classList.add("active");
-                groupBy = btn.dataset.group === "none" ? null : btn.dataset.group;
-                updateFilterBadge();
-                if (cachedResults) reapplyFilters();
-                updateUrl();
-            });
-        });
-
-        // Close filter popover on outside click
-        document.addEventListener("click", (e) => {
-            if (!e.target.closest(".filter-popover") && !e.target.closest(".filter-btn")) {
-                closeFilterPopover();
-            }
-        });
-
-        // Copy on click in detail pane
-        $("#detail-content").addEventListener("click", (e) => {
-            if (e.target.closest("a")) return;
-            const target = e.target.closest(".detail-value, .detail-title, .detail-reqno");
-            if (!target) return;
-            const text = target.textContent.trim();
-            if (!text) return;
-            navigator.clipboard.writeText(text).then(() => {
-                target.classList.add("copy-flash");
-                setTimeout(() => target.classList.remove("copy-flash"), 700);
-
-                const badge = document.createElement("div");
-                badge.className = "copy-badge";
-                badge.textContent = "Copied!";
-                badge.style.left = e.clientX + "px";
-                badge.style.top = e.clientY + "px";
-                document.body.appendChild(badge);
-                badge.addEventListener("animationend", () => badge.remove());
-            });
-        });
-
-        // Detail
-        $("#detail-close").addEventListener("click", closeDetail);
-        document.addEventListener("click", (e) => {
-            if (document.body.classList.contains("detail-open") &&
-                !e.target.closest("#detail-panel") &&
-                !e.target.closest(".result-card") &&
-                !e.target.closest(".carousel-card") &&
-                !e.target.closest(".result-group-header")) {
-                closeDetail();
-            }
-        });
-        document.addEventListener("keydown", (e) => {
-            if (e.key !== "Escape") return;
-            if ($("#help-modal").classList.contains("visible")) { closeHelp(); return; }
-            if ($("#filter-popover").style.display !== "none") { closeFilterPopover(); return; }
-            closeDetail();
-        });
-
-        // Settings
-        $("#settings-btn").addEventListener("click", openSettings);
-        $("#settings-close").addEventListener("click", closeSettings);
-        $("#settings-overlay").addEventListener("click", closeSettings);
-
-        // Search help
-        $("#search-help-btn").addEventListener("click", openHelp);
-        $("#force-refresh-btn").addEventListener("click", forceRefresh);
-
-        // Auto-apply toggle — reflects current setting, persists on change.
-        const autoRefreshToggle = $("#auto-refresh-toggle");
-        autoRefreshToggle.checked = config.larkAutoApply !== false;
-        autoRefreshToggle.addEventListener("change", () => {
-            config.larkAutoApply = autoRefreshToggle.checked;
-            localStorage.setItem("larkAutoApply", String(autoRefreshToggle.checked));
-            larkLog("Auto-apply " + (autoRefreshToggle.checked ? "enabled" : "disabled") + ".");
-        });
-        $("#help-close").addEventListener("click", closeHelp);
-        $("#modal-overlay").addEventListener("click", () => {
-            if ($("#help-modal").classList.contains("visible")) closeHelp();
-        });
-        $("#settings-enc-btn").addEventListener("click", handleEncryptFile);
-
-        // File input proxy
-        $("#settings-enc-file-btn").addEventListener("click", () => {
-            $("#settings-enc-file").click();
-        });
-        $("#settings-enc-file").addEventListener("change", () => {
-            const file = $("#settings-enc-file").files[0];
-            $("#settings-enc-file-name").textContent = file ? file.name : "No file chosen";
-        });
-
-        // Keep the filter popover inside the viewport across resize / rotation
-        window.addEventListener("resize", fitFilterPopover);
-        window.addEventListener("orientationchange", fitFilterPopover);
-
-        // System theme change listener
-        window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
-            if ((localStorage.getItem("theme") || config.theme || "system") === "system") applyTheme("system");
-        });
-
-        // Load database (wait for Orama ESM to load first)
-        await waitForOrama();
-        await initDatabase();
-    }
-
-    document.addEventListener("DOMContentLoaded", init);
-
-    return { init };
+/*
+ * Suppliers: the page shell. State, routes, the header, the login, loading the records,
+ * the address bar, and the wiring between the views (each view is a module of its own:
+ * searchbar.js, filters.js, results.js, detail.js, carousel.js, settings-view.js).
+ *
+ * Routes: #/ search · #/r/<record id> a record open beside the results · #/settings.
+ * The search itself lives in the query string (?q=…&tab=…), in the old page's format, so
+ * a link someone shared opens the same view (after they log in).
+ *
+ * The records come from the Lark Base every time the page loads, read as the signed-in
+ * person, and stay in this tab's memory only (they include suppliers' bank details): never
+ * in browser storage, and dropped the moment the login ends.
+ */
+import { APP, ENV_LABEL, LARK, RULES } from "./config.js";
+import { $, $$, h, ic, fillIcons, toast, fmt, store, recall, sleep, closeMenu } from "./ui.js";
+import * as settings from "./settings.js";
+import { cfg } from "./settings.js";
+import { larkService, onAnyService, blockedHosts, describe, lark, unreachable } from "./net.js";
+import { isDeadToken, LarkError } from "./errors.js";
+import * as auth from "./auth.js";
+import { loadFields, loadRecords } from "./tables.js";
+import { checkSchema } from "./schema.js";
+import { toRows, sortTime } from "./rows.js";
+import { createIndex } from "./search.js";
+import { cacheKey, pack, unpack, ownerOf } from "./cache.js";
+import { TABS, detectExactPattern, highlightTerms, encodeState, decodeState, statsOf, recent } from "./query.js";
+import { createSearchBar } from "./searchbar.js";
+import { createFilters } from "./filters.js";
+import { createResults } from "./results.js";
+import { createDetail } from "./detail.js";
+import { createCarousel } from "./carousel.js";
+import { createSettingsView } from "./settings-view.js";
+
+const KEY = { theme: "suppliers.theme", view: "suppliers.view" };
+// What "Clear local data" forgets (never the login or the theme): the settings and the saved copy of the records.
+const localKeys = () => ["suppliers.settings", ...(cfg().table.error ? [] : [cacheKey(cfg().table)])];
+const LOW_SESSION_MS = 10 * 60 * 1000;
+
+/* ======================= state ======================= */
+const defaultFilters = () => ({ sort: null, statuses: new Set(RULES.defaultStatuses), outsource: null, currency: null, group: null });
+const S = {
+  view: "login",            // login | busy | search | settings
+  gen: 0,                   // bumped when a login ends, so a load still running can't bring its records back
+  rows: null, byId: new Map(), index: null, stats: null, loadedAt: 0, schema: null, countNote: "",
+  fromCache: false,         // the records on screen are the saved copy (the live read is still running)
+  loading: false, quiet: false, waking: false, stage: "", progress: null, loadError: null,
+  fresh: null,              // a quiet refresh that finished while results were showing: applied on "Show them"
+  filters: defaultFilters(),
+  tab: "all", exact: false, userExact: false, autoExact: false,
+  browse: false,            // "Browse all": every record, with the filters
+  results: null,            // one list per tab ([{ item, score }]), or null when there's no search
+  terms: [], queryText: "",
+  open: null,               // the record open in the detail panel
+  user: null, loginNote: "", returnTo: "",
+};
+const prefs = () => ({ rate: settings.exchangeRate(), show: settings.showPrices() });
+
+/* Every Lark call runs as the signed-in person, and every one of them is a read (retried while
+   the proxy wakes). While a load runs (auth.track), its calls may use the token until its real
+   expiry, so the clock can't cut a load off half way. */
+function call(method, url, body) {
+  const t = auth.busyWorking() ? auth.workToken() : auth.currentToken();
+  if (!t) {
+    auth.end("Your login ended after about 2 hours. Log in again to keep going.");
+    return Promise.reject(new LarkError("login ended", { deadToken: true }));
+  }
+  return lark(method, url, { token: t.access_token, body, read: true });
+}
+
+/* ======================= views ======================= */
+const ctx = {
+  S, prefs,
+  browsing: () => S.browse,
+  fieldValues: (f, p, n) => (S.index ? S.index.fieldValues(f, p, n) : []),
+  changed: () => runSearch(),
+  cleared: () => clearSearch(),
+  setFilters: (patch) => setFilters(patch),
+  resetFilters: () => setFilters(defaultFilters()),
+  startField: (f) => bar.startField(f),
+  open: (id) => openRecord(id),
+  browseAll: () => browseAll(),
+  total: () => (S.rows ? S.rows.length : 0),
+  close: () => closeRecord(),
+  data: () => ({
+    state: S.loading && !S.rows ? "loading" : S.loadError ? "error" : S.rows ? "ok" : "unknown",
+    count: S.rows ? S.rows.length : 0, newest: S.stats ? S.stats.newest : "", loadedAt: S.loadedAt,
+    error: S.loadError ? loadErrorText(S.loadError) : "", notes: S.schema ? S.schema.notes : [],
+  }),
+  refresh: () => load({ quiet: true, manual: true }),
+  login: (returnTo) => login(returnTo),
+  logout: () => { dropCache(); auth.logout(); location.hash = "#/"; },
+  clearLocal: () => clearLocal(),
+  pricesChanged: () => pricesChanged(),
+};
+const bar = createSearchBar(ctx);
+const filters = createFilters(ctx);
+const results = createResults(ctx);
+const detail = createDetail(ctx);
+const carousel = createCarousel(ctx);
+const settingsView = createSettingsView(ctx);
+
+/* ======================= routes ======================= */
+function parseRoute() {
+  const hash = location.hash || "#/";
+  if (/^#\/settings\b/.test(hash)) return { view: "settings", open: null };
+  const m = hash.match(/^#\/r\/([^/?#]+)/);
+  return { view: "search", open: m ? decodeURIComponent(m[1]) : null };
+}
+
+function onRoute() {
+  const r = parseRoute();
+  const wasOpen = S.open;
+  if (r.view === "settings") S.view = "settings";
+  else if (!auth.currentToken()) { S.view = "login"; S.returnTo = location.hash || "#/"; }
+  else { S.view = "search"; S.open = r.open; }
+  if (S.view === "search" && S.open && S.rows && !S.byId.has(S.open)) {
+    toast("That record isn't in the procurement table, or your account can't see it.", { type: "info" });
+    S.open = null;
+    history.replaceState(null, "", `${location.pathname}${location.search}#/`);
+  }
+  render();
+  if (S.view === "search" && S.open !== wasOpen) afterOpenChange(wasOpen);
+  if (auth.currentToken() && !S.rows && !S.loading && !S.loadError) load();
+  if (S.view === "settings") window.scrollTo(0, 0);
+}
+
+/** A record opened or closed: on a narrow screen the sheet takes the keyboard; closing gives it back to the card. */
+function afterOpenChange(was) {
+  const narrow = matchMedia("(max-width: 768px)").matches;   // the panel covers the screen
+  if (S.open && narrow) detail.focus();
+  if (!S.open && was) {
+    const c = results.cardFor(was) || document.querySelector(`.recent-card[data-id="${CSS.escape(was)}"]`);
+    if (c && (narrow || document.activeElement === document.body || $("#detail").contains(document.activeElement))) c.focus({ preventScroll: !narrow });
+  }
+}
+
+/* Opening a record from the list adds one history entry (so Back closes it); moving from one
+   open record to another replaces it, so Back doesn't walk through every card you looked at. */
+function openRecord(id) {
+  const url = `${location.pathname}${location.search}#/r/${encodeURIComponent(id)}`;
+  if (S.open) history.replaceState(history.state, "", url);
+  else history.pushState({ opened: true }, "", url);
+  onRoute();
+}
+function closeRecord() {
+  if (!S.open) return;
+  if (history.state && history.state.opened) history.back();   // popstate runs onRoute
+  else { history.replaceState(null, "", `${location.pathname}${location.search}#/`); onRoute(); }
+}
+
+/* ======================= rendering ======================= */
+function pageTitle() {
+  if (S.view === "search" && S.open && S.byId.has(S.open)) return `${S.byId.get(S.open)["Particulars_Item"] || "Record"} · ${APP.name}`;
+  return `${{ login: "Log in", busy: "Logging in", settings: "Settings", search: "Search" }[S.view]} · ${APP.name}`;
+}
+
+function render() {
+  for (const v of $$(".view")) v.classList.toggle("active", v.dataset.view === S.view);
+  document.body.dataset.view = S.view;
+  document.title = pageTitle();
+  renderHeader();
+  paintBlock();
+  if (S.view === "login") renderLogin();
+  if (S.view === "settings") settingsView.show();
+  if (S.view === "search") renderSearch();
+  else document.body.classList.remove("detail-open");
+}
+
+const initials = (name) => (name || "").split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase() || "?";
+
+function renderHeader() {
+  $("#appVersion").textContent = $("#loginVersion").textContent = `v${APP.version}`;
+  $("#appVersion").title = `${APP.name} version ${APP.version}`;
+  const signedIn = !!auth.currentToken();
+  $("#envBadge").hidden = !ENV_LABEL;
+  $("#envBadge").textContent = ENV_LABEL;
+  const over = cfg().overrides;
+  $("#overrideBadge").hidden = !over.length;
+  $("#overrideBadge").title = over.length ? `Overridden in this browser. ${over.join(". ")}` : "";
+  $("#sessionPill").hidden = !signedIn;
+  $("#meLink").hidden = !signedIn;
+  $("#searchLink").hidden = !signedIn;
+  for (const a of $$(".nav a")) {
+    if (a.dataset.nav === S.view) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+  }
+  if (signedIn) {
+    const left = auth.msLeft();
+    $("#sessionLeft").textContent = fmt.duration(left);
+    $("#sessionPill").classList.toggle("is-low", left < LOW_SESSION_MS);
+    $("#sessionPill").title = `Your login lasts until ${fmt.time(auth.endsAt())}`;
+    $("#sessionPill").setAttribute("aria-label", `Logged in for ${fmt.duration(left)} more, until ${fmt.time(auth.endsAt())}`);
+    const u = S.user || auth.user() || {};
+    $("#avatar").hidden = !u.avatar;
+    if (u.avatar && $("#avatar").getAttribute("src") !== u.avatar) $("#avatar").src = u.avatar;
+    $("#initials").hidden = !!u.avatar;
+    $("#initials").textContent = initials(u.name);
+    $("#meLink").title = u.name ? `${u.name} · Settings` : "Settings";
+  }
+}
+
+function paintBlock() {
+  const hosts = blockedHosts();
+  $("#blockNote").hidden = !hosts.length;
+  $("#blockHost").textContent = hosts.join(", ") || larkService.host();
+}
+
+function renderSearch() {
+  $(".view-search").classList.toggle("has-results", !!S.results);
+  paintLoad();
+  paintStatus();
+  $("#home").hidden = !S.rows || !!S.results;
+  if (S.stats) $("#browseAll").querySelector(".label").textContent = `Browse all ${S.stats.records.toLocaleString()}`;
+  const notes = S.rows && S.schema ? S.schema.notes : [];
+  $("#schemaNote").hidden = !notes.length || !!S.results;
+  $("#schemaNoteText").textContent = notes.join(" ");
+  $("#openLark").href = cfg().table.url || "#/";
+  $("#refreshBtn").disabled = !auth.currentToken() || (S.loading && !S.quiet);
+  $("#refreshBtn").classList.toggle("is-busy", S.loading);
+  paintExact();
+  filters.paint();
+  bar.setReady(!!S.index);
+  detail.render();
+  results.markOpen();
+}
+
+/** Redraw the list (after a search, a tab, a filter or a price change). */
+function drawList(opts = {}) {
+  results.render(opts);
+  $(".view-search").classList.toggle("has-results", !!S.results);
+  const homeWas = $("#home").hidden;
+  $("#home").hidden = !S.rows || !!S.results;
+  if (homeWas && !$("#home").hidden) carousel.layout();   // back on the landing: the strip may have a new width
+  $("#schemaNote").hidden = !(S.rows && S.schema && S.schema.notes.length) || !!S.results;
+}
+
+function paintExact() {
+  const b = $("#qexact");
+  b.setAttribute("aria-pressed", String(S.exact));
+  b.title = S.autoExact ? "Exact match: on, because this looks like a request number or project code" : "Exact match only";
+}
+
+/* The status line: what's loaded and how fresh it is. */
+function paintStatus() {
+  const el = $("#status");
+  if (!S.rows) { el.replaceChildren(); el.hidden = true; return; }
+  el.hidden = false;
+  const s = S.stats;
+  const parts = [h("span", null, `${fmt.plural(s.records, "record")} · ${fmt.plural(s.suppliers, "supplier")}`)];
+  if (S.fromCache) parts.push(h("span", null, `· Saved copy from ${fmt.day(S.loadedAt)}, ${fmt.time(S.loadedAt)}`));
+  if (S.loading) parts.push(h("span", { class: "spinner", "aria-hidden": "true" }), h("span", null, S.fromCache ? "Reading the latest…" : "Refreshing…"));
+  else if (S.fresh) {
+    const d = S.fresh.rows.length - S.rows.length;
+    parts.push(h("span", null, `· Newer records are ready${d > 0 ? ` (${fmt.plural(d, "new record")})` : ""}.`),
+      h("button", { type: "button", class: "linkish", onclick: () => apply(S.fresh, { keepScroll: true }) }, "Show them"));
+  } else if (!S.fromCache) parts.push(h("span", null, `· Updated ${fmt.time(S.loadedAt)}`));
+  if (S.countNote) parts.push(h("span", { class: "status-warn" }, `· ${S.countNote}`));
+  el.replaceChildren(...parts);
+}
+
+/* The first load: a staged loader. Errors stay until the person tries again. */
+const STAGES = [["wake", "Connecting to Lark"], ["fields", "Checking the table's columns"],
+                ["records", "Reading the records"], ["index", "Building the search index"]];
+function loadErrorText(err) {
+  if (err.schema) return `${err.schema.problems.join(" ")} Tell the tool owner.`;
+  return describe(err);
+}
+function paintLoad() {
+  const box = $("#loadBox");
+  if (S.loadError && !S.rows) {
+    const err = S.loadError;
+    box.replaceChildren(h("div", { class: "callout callout-err", role: "alert" }, ic("alert"),
+      h("div", null, h("p", null, h("b", null, err.schema ? "Suppliers can't use the procurement table." : "Couldn't load the procurement records.")),
+        h("p", null, loadErrorText(err))),
+      err.schema && cfg().table.url ? h("a", { class: "btn btn-sm", href: cfg().table.url, target: "_blank", rel: "noopener" }, "Open in Lark")
+        : h("button", { type: "button", class: "btn btn-sm", onclick: () => { S.loadError = null; load(); } }, "Try again")));
+    return;
+  }
+  if (!S.loading || S.quiet || S.rows) { box.replaceChildren(); return; }
+  const at = STAGES.findIndex(([k]) => k === S.stage);
+  const p = S.progress;
+  box.replaceChildren(h("div", { class: "loader", role: "status" },
+    h("div", { class: "loader-title" }, h("span", { class: "spinner", "aria-hidden": "true" }),
+      S.waking ? "Waking up the connection…" : "Reading the procurement records…"),
+    S.waking ? h("p", { class: "loader-sub" }, "It sleeps when nobody's using it. This can take up to a minute.") : null,
+    h("ul", { class: "stages" }, STAGES.map(([k, label], i) => h("li", { class: i < at ? "done" : i === at ? "current" : "" },
+      i < at ? ic("check") : i === at ? h("span", { class: "spinner", "aria-hidden": "true" }) : h("span", { class: "slot", "aria-hidden": "true" }),
+      label,
+      i === at && p ? h("span", { class: "n" }, p.total ? `${p.n.toLocaleString()} of ${p.total.toLocaleString()}` : p.n.toLocaleString()) : null)))));
+}
+
+/* ======================= login ======================= */
+let probed = null;
+function renderLogin() {
+  const note = $("#loginMsg");
+  note.hidden = !S.loginNote;
+  note.textContent = S.loginNote;
+  // Check the address on the way in, and again whenever the screen comes back after a failure.
+  if (probed !== S.loginNote) {
+    probed = S.loginNote;
+    larkService.wake();   // start waking the proxy now, so it's ready after login
+    auth.redirectProblem().then((problem) => {
+      $("#redirectMsg").hidden = !problem;
+      $("#redirectMsg").textContent = problem || "";
+    });
+  }
+}
+
+async function login(returnTo) {
+  try {
+    await auth.startLogin(returnTo || S.returnTo || "#/");
+  } catch (e) {
+    S.loginNote = e.message;
+    if (S.view === "login") renderLogin(); else toast(e.message, { type: "error" });
+  }
+}
+// The search in the address bar is kept across Lark's page (Lark returns to the bare address).
+auth.onBeforeLogin(() => store("session", KEY.view, location.search));
+
+/* A login ended (the clock, Lark refusing the token, Log out): drop every record from memory. */
+function sessionEnded(message) {
+  S.gen++;
+  for (const d of document.querySelectorAll("dialog[open]")) d.close();
+  filters.close({ focus: false });
+  closeMenu();
+  Object.assign(S, { rows: null, byId: new Map(), index: null, stats: null, schema: null, results: null, fresh: null, fromCache: false,
+                     open: null, loadError: null, loadedAt: 0, countNote: "", user: null });
+  carousel.render([]);
+  results.render();
+  detail.render({ instant: true });   // the panel's text goes too (it may show a supplier's bank details)
+  S.loginNote = message || "Your login ended after about 2 hours. Log in again to keep going.";
+  S.returnTo = location.hash || "#/";
+  if (S.view !== "settings") S.view = "login";
+  render();
+}
+auth.onEnded(sessionEnded);
+
+/* ======================= loading ======================= */
+const showingResults = () => !!S.results || !!S.open;
+
+/** Read the whole table. quiet: keep showing what's there and refresh in the background.
+ *  manual: the person asked (Refresh), so apply it at once. A background refresh that finds
+ *  results on screen waits for "Show them" instead of moving them under the person. */
+async function load({ quiet = false, manual = false } = {}) {
+  if (S.loading || !auth.currentToken()) return;
+  const t = cfg().table;
+  if (t.error) { S.loadError = new LarkError(t.error, { userMessage: t.error }); render(); return; }
+  const gen = S.gen;
+  Object.assign(S, { loading: true, quiet: quiet && !!S.rows, loadError: null, stage: "wake", progress: null, waking: false });
+  if (S.view === "search") renderSearch();
+  // Nothing on screen yet: show the saved copy (if this person has one) while the table is read behind it.
+  if (!S.rows) {
+    const saved = await readCache(t);
+    if (gen !== S.gen) { S.loading = false; return; }
+    if (saved) {
+      const index = createIndex();
+      await index.build(saved.rows);
+      if (gen !== S.gen) { S.loading = false; return; }
+      apply({ rows: saved.rows, index, schema: null, at: saved.at, countNote: "", fromCache: true });
+      S.quiet = true;
+      if (S.view === "search") renderSearch();
+    }
+  }
+  try {
+    const fresh = await auth.track(async () => {
+      const awake = larkService.wake();
+      if ((await Promise.race([awake, sleep(1200).then(() => "slow")])) === "slow" && !S.quiet) { S.waking = true; paintLoad(); }
+      if (!(await awake)) throw unreachable();
+      S.waking = false;
+      S.stage = "fields"; paintLoad();
+      const schema = checkSchema(await loadFields(call, t));
+      if (schema.problems.length) throw Object.assign(new Error(schema.problems.join(" ")), { schema });
+      S.stage = "records"; paintLoad();
+      let total = null;
+      const items = await loadRecords(call, t, schema.present, (n, of) => { total = of; S.progress = { n, total: of }; paintLoad(); });
+      const rows = toRows(items, LARK.tzOffsetMinutes);
+      S.stage = "index"; S.progress = null; paintLoad();
+      const index = createIndex();
+      await index.build(rows, (n, of) => { S.progress = { n, total: of }; paintLoad(); });
+      return { rows, index, schema, at: Date.now(),
+        countNote: total !== null && total !== items.length
+          ? `Lark counted ${total.toLocaleString()} records but ${items.length.toLocaleString()} came back, so the table changed while it was read. Refresh to be sure.` : "" };
+    });
+    if (gen !== S.gen) return;   // the login ended meanwhile: these records must not come back
+    saveCache(t, fresh.rows, fresh.at);
+    // The saved copy is replaced at once (search, filters and the open record stay); a quiet refresh
+    // over live records waits for "Show them" while results are on screen.
+    if (quiet && !manual && S.rows && !S.fromCache && showingResults()) S.fresh = fresh;
+    else apply(fresh, { keepScroll: !!S.rows });
+  } catch (err) {
+    if (gen !== S.gen || isDeadToken(err)) return;   // the session already ended; the login screen is up
+    if (S.rows) toast("Couldn't refresh the records.", { type: "error", detail: loadErrorText(err), action: "Try again", onAction: () => load({ quiet: true, manual: true }) });
+    else S.loadError = err;
+  } finally {
+    S.loading = false; S.quiet = false; S.stage = ""; S.progress = null; S.waking = false;
+    if (gen === S.gen) render();
+  }
+}
+
+/** Put freshly read records in place: the search, filters, tab and open record stay as they are. */
+function apply(fresh, { keepScroll = false } = {}) {
+  const first = !S.rows;
+  Object.assign(S, { rows: fresh.rows, index: fresh.index, schema: fresh.schema, loadedAt: fresh.at, countNote: fresh.countNote, fresh: null,
+                     fromCache: !!fresh.fromCache });
+  S.byId = new Map(fresh.rows.map((r) => [r.$id, r]));
+  S.stats = statsOf(fresh.rows);
+  carousel.render(recent(fresh.rows));
+  bar.setReady(true);
+  if (S.open && !S.byId.has(S.open)) {
+    toast("The record you had open isn't in the table any more.", { type: "info" });
+    closeRecord();
+  }
+  if (bar.fullQuery() || S.browse) runSearch({ keepScroll, keepOpen: true });
+  render();
+  if (first && S.view === "search" && !S.open) bar.focus();
+}
+
+/* ======================= the saved copy (js/cache.js) ======================= */
+/** This person's saved copy of the table, or null. Someone else's (or an old format) is dropped. */
+async function readCache(t) {
+  const key = cacheKey(t);
+  const saved = recall("local", key);
+  if (!saved) return null;
+  const owner = ownerOf(await auth.loadUser().catch(() => null));
+  const got = owner ? await unpack(saved, owner).catch(() => null) : null;
+  if (!got && owner) store("local", key);
+  return got;
+}
+/** Save the live read for next time (quietly: a full browser storage just means no saved copy). */
+async function saveCache(t, rows, at) {
+  try {
+    const owner = ownerOf(auth.user() || await auth.loadUser());
+    if (!owner || !auth.currentToken()) return;
+    const gen = S.gen;
+    const packed = await pack(rows, { owner, at });
+    if (gen === S.gen) store("local", cacheKey(t), packed);
+  } catch (_) { /* no saved copy this time */ }
+}
+function dropCache() { if (!cfg().table.error) store("local", cacheKey(cfg().table)); }
+
+/* ======================= searching ======================= */
+let seq = 0;
+async function runSearch({ keepScroll = false, keepOpen = false } = {}) {
+  const full = bar.fullQuery();
+  if (full) S.browse = false;
+  bar.setReady(!!S.index);
+  // Request numbers and project codes switch Exact on by themselves (free text only), unless you chose.
+  const free = bar.freeText();
+  const auto = free ? detectExactPattern(free) : false;
+  if (auto && !S.userExact) { S.autoExact = true; S.exact = true; }
+  else if (!auto && S.autoExact) { S.autoExact = false; S.exact = S.userExact; }
+  paintExact();
+  updateUrl();
+  if (!S.index) return;   // still loading: it runs again once the records are in
+  if (!full && !S.browse) { clearResults(); return; }
+  const my = ++seq;
+  let lists;
+  if (!full) {
+    const all = S.rows.slice().sort((a, b) => sortTime(b["Submitted at"]) - sortTime(a["Submitted at"])).map((item) => ({ item, score: 0 }));
+    lists = TABS.map(() => all);
+  } else {
+    lists = await Promise.all(TABS.map((tab) => S.index.search(full, { tab, exact: S.exact })));
+  }
+  if (my !== seq) return;   // a newer search has started
+  S.results = lists;
+  S.queryText = full;
+  S.terms = highlightTerms(bar.highlightText());
+  if (!keepOpen && S.open) closeRecord();
+  drawList({ keepScroll, newResults: true });
+  renderSearch();
+}
+
+function clearResults() {
+  S.results = null; S.terms = []; S.queryText = "";
+  if (S.open) closeRecord();
+  drawList();
+  renderSearch();
+}
+function clearSearch() {
+  S.browse = false;
+  bar.setReady(!!S.index);
+  runSearch();
+}
+
+function setFilters(patch) {
+  Object.assign(S.filters, patch);
+  filters.paint();
+  drawList();
+  updateUrl();
+}
+
+function pricesChanged() {
+  if (S.results) drawList({ keepScroll: true });
+  detail.render();
+  if (S.rows) carousel.render(recent(S.rows));
+  updateUrl();
+}
+
+/* ======================= the address bar ======================= */
+function updateUrl() {
+  const qs = encodeState({
+    chips: bar.chips(), text: bar.freeText(), exact: S.exact, tab: S.tab, ...S.filters, all: S.browse,
+    theme: recall("local", KEY.theme) || "system", rate: settings.exchangeRate(), show: settings.showPrices(),
+  });
+  // Developer switches stay in the address while they're on (local page only).
+  const keep = new URLSearchParams();
+  if (settings.localPage) {
+    const now = new URLSearchParams(location.search);
+    for (const k of ["preview", "lark"]) if (now.has(k)) keep.set(k, now.get(k));
+  }
+  const all = [qs, keep.toString()].filter(Boolean).join("&");
+  const next = `${location.pathname}${all ? `?${all}` : ""}${location.hash}`;
+  if (next !== `${location.pathname}${location.search}${location.hash}`) history.replaceState(history.state, "", next);
+}
+
+function applyUrlState() {
+  const d = decodeState(location.search);
+  if ("exact" in d) { S.userExact = d.exact; S.exact = d.exact; }
+  if (d.tab) S.tab = d.tab;
+  for (const k of ["sort", "statuses", "outsource", "currency", "group"]) if (k in d) S.filters[k] = d[k];
+  if (d.all) S.browse = true;
+  if (d.chips) bar.setState(d.chips, d.text);
+  if (!("exact" in d) && d.text && detectExactPattern(d.text)) { S.autoExact = true; S.exact = true; }
+}
+
+/* ======================= this browser ======================= */
+function clearLocal() {
+  const saved = localKeys().map((k) => [k, recall("local", k)]);
+  localKeys().forEach((k) => store("local", k));
+  settings.rebuild();
+  pricesChanged();
+  settingsView.paint();
+  toast("Cleared the saved records, the exchange rate and the price display in this browser.", {
+    type: "success", detail: "Your login and theme are kept.", action: "Undo", onAction: () => {
+      saved.forEach(([k, v]) => { if (v !== null) store("local", k, v); });
+      settings.rebuild();
+      pricesChanged();
+      settingsView.paint();
+    },
+  });
+}
+
+/* ======================= wiring ======================= */
+fillIcons();
+settingsView.mount();
+$("#loginBtn").addEventListener("click", () => login());
+$("#reloadBtn").addEventListener("click", () => location.reload());
+$("#refreshBtn").addEventListener("click", () => load({ quiet: true, manual: true }));
+function browseAll() { bar.clear(); S.browse = true; bar.setReady(true); runSearch(); }
+$("#browseAll").addEventListener("click", browseAll);
+$("#qexact").addEventListener("click", () => {
+  S.userExact = !S.userExact;
+  S.autoExact = false;
+  S.exact = S.userExact;
+  paintExact();
+  runSearch({ keepOpen: true });
+});
+$("#qhelp").addEventListener("click", () => $("#help").showModal());
+$("#helpClose").addEventListener("click", () => $("#help").close());
+$("#help").addEventListener("click", (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });   // backdrop
+$("#themeSeg").addEventListener("click", () => setTimeout(updateUrl));
+// The tabs: in-page tabs over one result list (arrow keys move between them).
+const tabs = $$(".qtab");
+for (const t of tabs) {
+  t.addEventListener("click", () => {
+    S.tab = t.dataset.tab;
+    drawList();
+    updateUrl();
+  });
+  t.addEventListener("keydown", (e) => {
+    const i = tabs.indexOf(t);
+    const to = { ArrowRight: i + 1, ArrowLeft: i - 1 + tabs.length, Home: 0, End: tabs.length - 1 }[e.key];
+    if (to === undefined) return;
+    e.preventDefault();
+    const next = tabs[to % tabs.length];
+    next.focus();
+    next.click();
+  });
+}
+document.addEventListener("keydown", (e) => {
+  const typing = e.target.closest && e.target.closest("input, textarea, select, [contenteditable]");
+  if (e.key === "/" && !typing && S.view === "search" && !document.querySelector("dialog[open]") && !e.ctrlKey && !e.metaKey) {
+    e.preventDefault();
+    bar.focus();
+    return;
+  }
+  if (e.key === "Escape" && S.view === "search" && S.open && !document.querySelector("dialog[open]") && !filters.isOpen()) closeRecord();
+});
+// A click outside the open record closes it (as on the old page). Clicks on a card (they open or switch
+// records), a group's header, a toast, the filter panel, a menu or a dialog don't count.
+document.addEventListener("click", (e) => {
+  if (S.view !== "search" || !S.open) return;
+  if (!e.target.isConnected || document.querySelector("dialog[open]") || filters.isOpen()) return;
+  if (e.target.closest("#detail, a.result, .recent-card, .rgroup > summary, .toasts, .popover, .ctx-menu, .filter-backdrop")) return;
+  if (String(getSelection() || "").trim()) return;   // ending a text selection isn't a click outside
+  closeRecord();
+});
+onAnyService(() => {
+  paintBlock();
+  if (S.view === "busy") {
+    $("#busyMsg").textContent = larkService.status.state === "waking"
+      ? "Logging you in… Waking up the connection service, which can take up to a minute." : "Logging you in…";
+  }
+});
+addEventListener("hashchange", onRoute);
+addEventListener("popstate", onRoute);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  // Back after a long while: refresh quietly (results on screen aren't moved: see load()).
+  if (S.rows && !S.loading && Date.now() - S.loadedAt > RULES.staleAfterMs) load({ quiet: true });
+});
+auth.startClock(() => { renderHeader(); settingsView.tick(); });
+
+(async function init() {
+  const params = new URLSearchParams(location.search);
+  if (params.has("code") || params.has("error")) {
+    S.view = "busy";
+    render();
+    const res = await auth.handleRedirect();   // strips ?code first, wakes the proxy, swaps the code once
+    const saved = recall("session", KEY.view);
+    store("session", KEY.view, undefined);
+    if (typeof saved === "string" && saved.startsWith("?")) history.replaceState(null, "", `${location.pathname}${saved}${location.hash}`);
+    if (!res.ok) S.loginNote = res.message;
+  } else {
+    if (!location.hash) history.replaceState(null, "", `${location.pathname}${location.search}#/`);
+    if (!auth.currentToken()) await auth.borrowLogin();   // another open Suppliers tab may already be logged in
+  }
+  settings.takeUrlChoices(new URLSearchParams(location.search));
+  applyUrlState();
+  if (auth.currentToken()) {
+    auth.loadUser().then((u) => { S.user = u; renderHeader(); if (S.view === "settings") settingsView.paint(); })
+      .catch(() => {});   // no name or picture is fine; a dead login already ended the session (net.js)
+  } else if (auth.hadSession() && !S.loginNote) {
+    S.loginNote = "Your login ended after about 2 hours. Log in again to keep going.";
+    auth.clearSession();
+  }
+  larkService.wake();
+  onRoute();
+  updateUrl();   // tidies the address (an old ?debugkey= goes, for one)
 })();
+document.documentElement.dataset.booted = "";   // started: the boot watchdog in index.html stands down

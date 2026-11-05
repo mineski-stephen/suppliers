@@ -1,400 +1,344 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Procurement Database</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Work+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap">
-    <link rel="stylesheet" href="css/styles.css">
+  <meta charset="utf-8">
+  <!-- Never cache the page itself. -->
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <!-- Where this page may send data: itself and the hosted connection service (a local address
+       too, for testing on this computer). A login token can't go anywhere else. Search runs in
+       the page (js/vendor/orama.js), so no script comes from a CDN. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self' https://lark-proxy-dwiw.onrender.com http://127.0.0.1:*; object-src 'none'; base-uri 'self'; form-action 'self'">
+  <title>Suppliers · Mineski</title>
+  <meta name="description" content="Suppliers finds past procurement requests, suppliers and prices in Mineski's Lark Base.">
+  <meta name="theme-color" content="#F7F3F5" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#170E12" media="(prefers-color-scheme: dark)">
+  <link rel="icon" type="image/svg+xml" href="img/suppliers-icon.svg">
+  <link rel="icon" type="image/png" sizes="32x32" href="img/suppliers-icon-32.png">
+  <link rel="apple-touch-icon" href="img/suppliers-icon-180.png">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&display=swap">
+  <!-- Apply the saved theme (Settings > Appearance, or ?theme= in a shared link) before anything paints. -->
+  <script>try { var m = /[?&]theme=(light|dark|system)(&|$)/i.exec(location.search); if (m) { var c = m[1].toLowerCase(); if (c === "system") localStorage.removeItem("suppliers.theme"); else localStorage.setItem("suppliers.theme", JSON.stringify(c)); } var t = JSON.parse(localStorage.getItem("suppliers.theme")); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}</script>
+  <!-- Every load fetches the stylesheets and every script module under a fresh URL, so a stale
+       cached copy is never used. The import map gives each module's imports the same fresh URL.
+       List every JS file here (npm run check:shell checks it). -->
+  <script>
+    (function () {
+      var v = window.APP_BUILD = Date.now().toString(36);
+      var files = ["js/config.js", "js/errors.js", "js/icons.js", "js/ui.js", "js/tables.js", "js/settings.js", "js/net.js",
+                   "js/auth.js", "js/schema.js", "js/rows.js", "js/cache.js", "js/query.js", "js/vendor/orama.js", "js/search.js",
+                   "js/present.js", "js/searchbar.js", "js/filters.js", "js/results.js", "js/detail.js", "js/carousel.js",
+                   "js/settings-view.js", "js/app.js"];
+      var map = { imports: {} };
+      files.forEach(function (f) { map.imports[new URL(f, location.href).href] = new URL(f + "?v=" + v, location.href).href; });
+      document.write('<link rel="stylesheet" href="css/theme.css?v=' + v + '">');
+      document.write('<link rel="stylesheet" href="css/mineski-base.css?v=' + v + '">');
+      document.write('<link rel="stylesheet" href="css/app.css?v=' + v + '">');
+      document.write('<script type="importmap">' + JSON.stringify(map) + '<\/script>');
+      // Developers only: ?preview on this computer runs on tests/fixture.json (made-up records), with Lark simulated.
+      if (/^(localhost|127\.0\.0\.1)$/.test(location.hostname) && /[?&]preview(&|=|$)/.test(location.search)) {
+        document.write('<script src="tests/preview-shim.js?v=' + v + '"><\/script>');
+      }
+    })();
+  </script>
 </head>
 <body>
-    <!-- Header -->
-    <header class="header">
-        <div class="header-title" id="app-title">Procurement Database</div>
-        <div class="header-actions">
-            <button class="icon-btn" id="settings-btn" title="Settings">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <circle cx="12" cy="12" r="3"/><path d="M12 1v2m0 18v2M4.22 4.22l1.42 1.42m12.73 12.73l1.42 1.42M1 12h2m18 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
-                </svg>
-            </button>
-        </div>
-    </header>
+  <a class="skip" href="#main">Skip to content</a>
+  <div class="bg" aria-hidden="true"></div>
 
-    <!-- Content Wrapper -->
-    <div class="content-wrapper" id="content-wrapper">
-        <main class="main-content" id="main-content">
-            <!-- Search Area -->
-            <div class="search-area">
-                <img src="img/mineski_logo.svg" alt="" class="search-logo">
-                <div class="search-box" id="search-box">
-                    <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
-                    </svg>
-                    <div class="search-field" id="search-field">
-                        <div class="search-chips" id="search-chips"></div>
-                        <input type="text" class="search-input" id="search-input" placeholder="Search procurement orders..." autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="slash-dropdown">
-                    </div>
-                    <button class="search-clear" id="search-clear" title="Clear search">
-                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M18 6 6 18M6 6l12 12"/>
-                        </svg>
-                    </button>
-                    <button class="search-toggle" id="exact-toggle" title="Exact match only" aria-pressed="false">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/>
-                        </svg>
-                        <span>Exact</span>
-                    </button>
-                    <div class="slash-dropdown" id="slash-dropdown" role="listbox" style="display:none"></div>
-                </div>
-                <div class="stats">
-                    <span><strong id="stat-records">0</strong> records</span>
-                    <span><strong id="stat-suppliers">0</strong> suppliers</span>
-                </div>
-                <div class="search-controls">
-                    <div class="search-tabs" id="search-tabs">
-                        <button class="search-tab active" data-tab="all">All<span class="tab-badge" style="display:none"></span></button>
-                        <button class="search-tab" data-tab="particulars">Particulars<span class="tab-badge" style="display:none"></span></button>
-                        <button class="search-tab" data-tab="suppliers">Suppliers<span class="tab-badge" style="display:none"></span></button>
-                        <button class="search-tab" data-tab="projects">Projects<span class="tab-badge" style="display:none"></span></button>
-                    </div>
-                    <button class="filter-btn" id="filter-btn" title="Filters & Sort">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <line x1="4" y1="6" x2="20" y2="6"/><line x1="8" y1="12" x2="20" y2="12"/><line x1="12" y1="18" x2="20" y2="18"/>
-                        </svg>
-                        <span class="filter-badge" id="filter-badge" style="display:none"></span>
-                    </button>
-                </div>
-                <div class="filter-popover" id="filter-popover" style="display:none">
-                    <div class="filter-section">
-                        <div class="filter-section-title">Sort By</div>
-                        <div class="filter-options">
-                            <button class="filter-option" data-sort="date-desc">Date &#8595;</button>
-                            <button class="filter-option" data-sort="date-asc">Date &#8593;</button>
-                            <button class="filter-option" data-sort="price-desc">Price &#8595;</button>
-                            <button class="filter-option" data-sort="price-asc">Price &#8593;</button>
-                            <button class="filter-option" data-sort="unitprice-asc">Unit Price &#8593;</button>
-                            <button class="filter-option" data-sort="unitprice-desc">Unit Price &#8595;</button>
-                            <button class="filter-option" data-sort="project-asc">Project A-Z</button>
-                            <button class="filter-option" data-sort="project-desc">Project Z-A</button>
-                        </div>
-                    </div>
-                    <div class="filter-section">
-                        <div class="filter-section-title">Status</div>
-                        <div class="filter-checks">
-                            <label class="filter-check"><input type="checkbox" data-status="Approved" checked> Approved</label>
-                            <label class="filter-check"><input type="checkbox" data-status="Under Review"> Under Review</label>
-                            <label class="filter-check"><input type="checkbox" data-status="Recalled"> Recalled</label>
-                            <label class="filter-check"><input type="checkbox" data-status="Rejected"> Rejected</label>
-                        </div>
-                    </div>
-                    <div class="filter-section">
-                        <div class="filter-section-title">Outsource</div>
-                        <div class="filter-checks">
-                            <label class="filter-check"><input type="checkbox" id="outsource-show-only"> Show Outsourced Only</label>
-                            <label class="filter-check"><input type="checkbox" id="outsource-hide-all"> Hide All Outsourced</label>
-                        </div>
-                    </div>
-                    <div class="filter-section">
-                        <div class="filter-section-title">Currency</div>
-                        <div class="filter-checks">
-                            <label class="filter-check"><input type="checkbox" id="currency-filter-php" data-currency-filter="PHP"> PHP Only</label>
-                            <label class="filter-check"><input type="checkbox" id="currency-filter-usd" data-currency-filter="USD"> USD Only</label>
-                        </div>
-                    </div>
-                    <div class="filter-section filter-section-last">
-                        <div class="filter-section-title">Group By</div>
-                        <div class="filter-options">
-                            <button class="filter-option active" data-group="none">None</button>
-                            <button class="filter-option" data-group="Business Unit">Business Unit</button>
-                            <button class="filter-option" data-group="Project Name">Project</button>
-                            <button class="filter-option" data-group="Supplier Details_Supplier Name">Supplier</button>
-                        </div>
-                    </div>
-                    <div class="filter-section filter-section-last" id="filter-chips-section">
-                        <div class="filter-section-title">Add Field Filter</div>
-                        <div class="filter-options filter-field-buttons" id="filter-field-buttons">
-                            <button class="filter-option field-add" data-add-field="particular_item">particular_item</button>
-                            <button class="filter-option field-add" data-add-field="business_unit">business_unit</button>
-                            <button class="filter-option field-add" data-add-field="project_name">project_name</button>
-                            <button class="filter-option field-add" data-add-field="project_code">project_code</button>
-                            <button class="filter-option field-add" data-add-field="project_manager">project_manager</button>
-                            <button class="filter-option field-add" data-add-field="supplier_account_name">supplier_account_name</button>
-                        </div>
-                        <div class="filter-hint">Starts a filter and drops the cursor in for you to type a value.</div>
-                    </div>
-                </div>
+  <header class="topbar">
+    <a class="brand" href="#/" aria-label="Suppliers home">
+      <img class="brand-mark" src="img/suppliers-icon.svg" alt="" width="34" height="34">
+      <span class="brand-name">Suppliers</span>
+      <span class="brand-ver" id="appVersion"></span>
+      <span class="env" id="envBadge" hidden></span>
+    </a>
+    <div class="top-right">
+      <a class="override-badge" id="overrideBadge" href="#/settings" hidden>Overridden</a>
+      <nav class="nav" aria-label="Main">
+        <a href="#/" data-nav="search" id="searchLink" hidden>Search</a>
+        <a href="#/settings" data-nav="settings" class="nav-icon" aria-label="Settings" title="Settings"><span class="i" data-icon="gear" aria-hidden="true"></span></a>
+      </nav>
+      <a class="session-pill" id="sessionPill" href="#/settings" hidden>
+        <span class="i" data-icon="clock" aria-hidden="true"></span><span id="sessionLeft"></span>
+      </a>
+      <a class="me" id="meLink" href="#/settings" hidden aria-label="Your account">
+        <img class="avatar" id="avatar" alt="" referrerpolicy="no-referrer" hidden>
+        <span class="avatar avatar-initials" id="initials" aria-hidden="true"></span>
+      </a>
+    </div>
+  </header>
+
+  <main id="main" tabindex="-1">
+    <div class="banner callout callout-err" id="blockNote" role="alert" hidden>
+      <span class="i" data-icon="alert" aria-hidden="true"></span>
+      <div>
+        <p><b>Suppliers can't reach its connection service.</b> An ad blocker or privacy extension is probably blocking it.</p>
+        <p>Allow <code id="blockHost">lark-proxy-dwiw.onrender.com</code> in your blocker (or pause it on this page), then reload.</p>
+      </div>
+      <button type="button" class="btn btn-sm" id="reloadBtn">Reload</button>
+    </div>
+
+    <!-- Logged out ---------------------------------------------------------------->
+    <section class="view view-login" data-view="login">
+      <div class="login-card">
+        <img class="login-mark" src="img/suppliers-icon.svg" alt="" width="88" height="88">
+        <h1>Suppliers</h1>
+        <p class="lede" id="loginVersion"></p>
+        <button type="button" class="btn btn-primary btn-lg" id="loginBtn"><span class="label">Log in with Lark</span></button>
+        <p class="hint">You'll stay logged in for about 2 hours.</p>
+        <div class="callout callout-warn" id="loginMsg" role="status" hidden></div>
+        <div class="callout callout-err" id="redirectMsg" hidden></div>
+      </div>
+    </section>
+
+    <!-- Finishing a login -------------------------------------------------------------->
+    <section class="view view-busy" data-view="busy">
+      <span class="spinner" aria-hidden="true"></span>
+      <p id="busyMsg">Logging you in…</p>
+    </section>
+
+    <!-- Search: the task ----------------------------------------------------------------->
+    <section class="view view-search" data-view="search" aria-labelledby="searchTitle">
+      <h1 class="sr-only" id="searchTitle">Search procurement records</h1>
+      <div class="desk" id="desk">
+        <div class="desk-main">
+          <div class="qhead">
+            <div class="qbox" id="qbox">
+              <span class="i qbox-icon" data-icon="search" aria-hidden="true"></span>
+              <div class="qfield" id="qfield">
+                <span class="qchips" id="qchips"></span>
+                <input type="text" id="q" class="qinput" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="qsuggest"
+                       aria-label="Search procurement records" placeholder="Search items, suppliers, projects…" autocomplete="off" spellcheck="false" enterkeyhint="search">
+              </div>
+              <button type="button" class="icon-btn plain icon-sm" id="qclear" aria-label="Clear the search" title="Clear the search (Esc)" hidden><span class="i" data-icon="x" aria-hidden="true"></span></button>
+              <button type="button" class="chip-opt qexact" id="qexact" aria-pressed="false" title="Exact match only"><span class="i" data-icon="check" aria-hidden="true"></span>Exact</button>
+              <button type="button" class="icon-btn plain icon-sm" id="qhelp" aria-label="Search help" title="Search help" aria-haspopup="dialog"><span class="i" data-icon="info" aria-hidden="true"></span></button>
+              <ul class="suggest" id="qsuggest" role="listbox" aria-label="Suggestions" hidden></ul>
             </div>
-
-            <!-- Recent Orders Carousel -->
-            <div class="recent-carousel-container" id="recent-carousel-container" style="display:none">
-                <div class="recent-carousel-header">Recent Orders</div>
-                <div class="recent-carousel-wrap">
-                    <div class="recent-carousel" id="recent-carousel"></div>
-                </div>
-            </div>
-
-            <!-- Results -->
-            <div class="results-area" id="results-area">
-                <div class="results-count" id="results-count"></div>
-                <div class="results-list" id="results-list"></div>
-            </div>
-        </main>
-
-        <!-- Detail Panel -->
-        <aside class="detail-panel" id="detail-panel">
-            <div class="detail-header">
-                <span class="detail-header-title">Order Details</span>
-                <button class="icon-btn" id="detail-close" title="Close">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M18 6 6 18M6 6l12 12"/>
-                    </svg>
+            <div class="qbar">
+              <div class="tabs qtabs" role="tablist" aria-label="Search in">
+                <button type="button" class="tab qtab" role="tab" data-tab="all" aria-selected="true" aria-controls="results">All <span class="count"></span></button>
+                <button type="button" class="tab qtab" role="tab" data-tab="particulars" aria-selected="false" aria-controls="results" tabindex="-1">Particulars <span class="count"></span></button>
+                <button type="button" class="tab qtab" role="tab" data-tab="suppliers" aria-selected="false" aria-controls="results" tabindex="-1">Suppliers <span class="count"></span></button>
+                <button type="button" class="tab qtab" role="tab" data-tab="projects" aria-selected="false" aria-controls="results" tabindex="-1">Projects <span class="count"></span></button>
+              </div>
+              <div class="qbar-tools">
+                <button type="button" class="icon-btn filter-btn" id="filterBtn" aria-haspopup="dialog" aria-expanded="false" aria-controls="filterPop" aria-label="Filter and sort" title="Filter and sort">
+                  <span class="i" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h18l-7 8.5V19l-4 2v-7.5L3 5z"/></svg></span><span class="count" id="filterCount"></span>
                 </button>
+                <button type="button" class="icon-btn" id="refreshBtn" aria-label="Refresh from Lark" title="Refresh from Lark"><span class="i" data-icon="refresh" aria-hidden="true"></span></button>
+                <a class="icon-btn" id="openLark" href="#/" target="_blank" rel="noopener" aria-label="Open the procurement table in Lark" title="Open in Lark"><span class="i" data-icon="external" aria-hidden="true"></span></a>
+              </div>
             </div>
-            <div class="detail-content" id="detail-content"></div>
+          </div>
+
+          <p class="list-status" id="status" aria-live="polite" hidden></p>
+          <div id="loadBox"></div>
+
+          <!-- Nothing searched yet: what's here, Browse all, and the newest records -->
+          <div class="home" id="home" hidden>
+            <div class="callout callout-warn" id="schemaNote" hidden><span class="i" data-icon="alert" aria-hidden="true"></span><div><p id="schemaNoteText"></p></div></div>
+            <section class="recent" id="recent" aria-labelledby="recentTitle" hidden>
+              <div class="recent-head">
+                <h2 class="subhead" id="recentTitle">Recent orders</h2>
+                <div class="recent-tools">
+                  <button type="button" class="btn btn-sm" id="browseAll"><span class="i" data-icon="table" aria-hidden="true"></span> <span class="label">Browse all</span></button>
+                  <button type="button" class="icon-btn icon-sm" id="recentPrev" aria-label="Earlier cards" title="Earlier"><span class="i" data-icon="arrowLeft" aria-hidden="true"></span></button>
+                  <button type="button" class="icon-btn icon-sm" id="recentNext" aria-label="Later cards" title="Later"><span class="i" data-icon="arrowRight" aria-hidden="true"></span></button>
+                </div>
+              </div>
+              <div class="recent-wrap" id="recentWrap"><div class="recent-track" id="recentTrack"></div></div>
+            </section>
+          </div>
+
+          <div class="results" id="results" role="tabpanel" aria-label="Results" hidden>
+            <p class="results-count" id="resultsCount" aria-live="polite"></p>
+            <div class="cards" id="resultList"></div>
+            <div class="more-row"><button type="button" class="btn" id="showMore" hidden><span class="label">Show more</span></button></div>
+            <p class="hidden-note" id="resultsNote" hidden></p>
+          </div>
+        </div>
+
+        <!-- One record, beside the results (a sheet on narrow screens) -->
+        <div class="detail-backdrop" id="detailBackdrop" aria-hidden="true"></div>
+        <aside class="card detail" id="detail" aria-labelledby="detailTitle" hidden>
+          <div class="detail-head">
+            <span class="subhead">Order details</span>
+            <button type="button" class="icon-btn plain icon-sm" id="detailClose" aria-label="Close the details" title="Close (Esc)"><span class="i" data-icon="x" aria-hidden="true"></span></button>
+          </div>
+          <div class="detail-body" id="detailBody"></div>
         </aside>
+      </div>
+    </section>
+
+    <!-- Settings --------------------------------------------------------------------------->
+    <section class="view view-settings" data-view="settings" aria-labelledby="settingsTitle">
+      <div class="page-head"><div><h1 id="settingsTitle">Settings</h1><p class="lede sm">Saved in this browser only.</p></div></div>
+      <div class="settings">
+        <section class="card set-card" aria-labelledby="accTitle">
+          <h2 id="accTitle">Account</h2>
+          <div class="account" id="account"></div>
+        </section>
+
+        <section class="card set-card" aria-labelledby="themeTitle">
+          <h2 id="themeTitle">Appearance</h2>
+          <div class="seg" id="themeSeg" role="radiogroup" aria-labelledby="themeTitle">
+            <button type="button" role="radio" data-theme-choice="system"><span class="i" data-icon="monitor" aria-hidden="true"></span> System</button>
+            <button type="button" role="radio" data-theme-choice="light"><span class="i" data-icon="sun" aria-hidden="true"></span> Light</button>
+            <button type="button" role="radio" data-theme-choice="dark"><span class="i" data-icon="moon" aria-hidden="true"></span> Dark</button>
+          </div>
+        </section>
+
+        <section class="card set-card" aria-labelledby="pricesTitle">
+          <h2 id="pricesTitle">Prices</h2>
+          <div class="field">
+            <label class="field-label" for="rateInput">Exchange rate</label>
+            <div class="rate-row"><span>1 USD =</span><input type="number" id="rateInput" min="0.01" step="0.01" inputmode="decimal" aria-describedby="rateHelp"><span>PHP</span></div>
+            <small id="rateHelp" class="rate-help" aria-live="polite"></small>
+          </div>
+          <div class="field">
+            <span class="field-label" id="showLbl">Show prices in</span>
+            <div class="seg" id="showSeg" role="radiogroup" aria-labelledby="showLbl">
+              <button type="button" role="radio" data-show="">Their own currency</button>
+              <button type="button" role="radio" data-show="PHP">PHP</button>
+              <button type="button" role="radio" data-show="USD">USD</button>
+            </div>
+          </div>
+          <p class="set-sub">Price sorting and group totals always convert to PHP at this rate.</p>
+        </section>
+
+        <section class="card set-card" aria-labelledby="connTitle">
+          <h2 id="connTitle">Connections</h2>
+          <ul class="status-list" id="connList"></ul>
+          <div class="callout callout-warn" id="schemaBox" hidden><span class="i" data-icon="alert" aria-hidden="true"></span><div><ul id="schemaList"></ul></div></div>
+          <p class="set-sub" id="envNote" hidden></p>
+          <details class="advanced" id="advanced" hidden>
+            <summary>Advanced: connection service address</summary>
+            <p class="set-sub">For testing on this computer only (for example http://127.0.0.1:8001). Leave it empty to use the hosted service. A <code>?lark=</code> link does the same for one tab; <code>?reset</code> clears it.</p>
+            <label class="field"><span>Proxy address</span><input type="url" id="proxyInput" spellcheck="false" autocomplete="off"></label>
+            <div class="row">
+              <button type="button" class="btn" id="proxySave">Save address</button>
+              <button type="button" class="btn btn-ghost" id="proxyReset">Use the hosted service</button>
+            </div>
+          </details>
+        </section>
+
+        <section class="card set-card" aria-labelledby="localTitle">
+          <h2 id="localTitle">This browser</h2>
+          <p class="set-sub">Clear the saved copy of the records (without bank details; it shows them at once next time), the exchange rate and the price display. Your login and theme are kept. Log out clears the saved records too.</p>
+          <div class="row"><button type="button" class="btn btn-ghost" id="clearLocal">Clear local data</button></div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <!-- Filter and sort: a popover under the funnel button (a bottom sheet on phones) -->
+  <div class="filter-backdrop" id="filterBackdrop" hidden></div>
+  <div class="popover filter-pop" id="filterPop" role="dialog" aria-labelledby="filterTitle" hidden>
+    <div class="fp-head"><h2 id="filterTitle">Filter and sort</h2>
+      <button type="button" class="icon-btn plain icon-sm" id="filterClose" aria-label="Close" title="Close (Esc)"><span class="i" data-icon="x" aria-hidden="true"></span></button></div>
+    <div class="fp-body" id="filterBody"></div>
+    <div class="fp-foot"><button type="button" class="btn btn-ghost btn-sm" id="filterReset">Reset filters</button></div>
+  </div>
+
+  <!-- Search help ------------------------------------------------------------------------>
+  <dialog class="modal wide help" id="help" aria-labelledby="helpTitle">
+    <div class="modal-form">
+      <header class="modal-head help-head">
+        <h2 id="helpTitle">Searching</h2>
+        <button type="button" class="icon-btn plain icon-sm" id="helpClose" aria-label="Close" title="Close (Esc)"><span class="i" data-icon="x" aria-hidden="true"></span></button>
+      </header>
+      <div class="modal-body help-body">
+        <section>
+          <h3 class="subhead">Words and phrases</h3>
+          <dl class="help-rows">
+            <div><dt><code>lighting rental</code></dt><dd>Records with either word. The best matches come first; small typos still match.</dd></div>
+            <div><dt><code>"exact phrase"</code></dt><dd>Double quotes: the whole phrase must appear.</dd></div>
+            <div><dt><code>-word</code> <code>-"a phrase"</code></dt><dd>Leaves out records that contain it.</dd></div>
+            <div><dt>Exact</dt><dd>The switch in the search box matches the text letter for letter. It turns on by itself for request numbers and project codes.</dd></div>
+          </dl>
+        </section>
+        <section>
+          <h3 class="subhead">Field filters</h3>
+          <p>Type <kbd>/</kbd> in the search box to pick a field, then type a value. Filters become chips and combine with each other and with the words you type.</p>
+          <dl class="help-rows">
+            <div><dt><code>project_code:'2026TEG'</code></dt><dd>Single quotes: the field contains the text.</dd></div>
+            <div><dt><code>project_code:"2026TEG-P0290"</code></dt><dd>Double quotes: the field is exactly the text.</dd></div>
+            <div><dt>Any value</dt><dd>Suggestions appear once you type, but any text works.</dd></div>
+            <div><dt>Click a chip</dt><dd>Switches it off (grey) without removing it. Click again to switch it back on.</dd></div>
+            <div><dt>Double-click a chip</dt><dd>Edits its value. <kbd>F2</kbd> does the same from the keyboard.</dd></div>
+            <div><dt>Type them</dt><dd>A typed <code>field:'value'</code> becomes a chip when you press <kbd>Enter</kbd>.</dd></div>
+          </dl>
+          <p class="help-fields"><code>particular_item</code> <code>business_unit</code> <code>project_name</code> <code>project_code</code> <code>project_manager</code> <code>supplier_account_name</code></p>
+        </section>
+        <section>
+          <h3 class="subhead">Tabs, filters and sort</h3>
+          <dl class="help-rows">
+            <div><dt>Tabs</dt><dd>Search only the items (Particulars), the suppliers, or the projects. The counts follow the filters.</dd></div>
+            <div><dt>Filter and sort</dt><dd>The funnel button: sort by date, price, unit price or project code; filter by status, outsourcing and currency; group by business unit, project or supplier, with a total per group.</dd></div>
+            <div><dt>Status</dt><dd>Only Approved records are shown until you pick more.</dd></div>
+            <div><dt>Browse all</dt><dd>Every record, newest first, with the same filters, sort and groups.</dd></div>
+            <div><dt>Prices</dt><dd>Settings &gt; Prices: the exchange rate (57 PHP per USD unless you change it) and the currency prices are shown in.</dd></div>
+          </dl>
+        </section>
+        <section>
+          <h3 class="subhead">Sharing a search</h3>
+          <p>The address bar always holds the search, the tab, the filters and the record you have open. Copy it to share exactly what you see. The person you send it to logs in with Lark first and sees only what their account can open.</p>
+          <dl class="help-rows">
+            <div><dt><code>?q=</code></dt><dd>The search, field filters included. <code>?qoff=</code> holds the chips that are switched off.</dd></div>
+            <div><dt><code>?exact=true</code></dt><dd>Exact matching.</dd></div>
+            <div><dt><code>?tab=</code></dt><dd><code>particulars</code>, <code>suppliers</code> or <code>projects</code>.</dd></div>
+            <div><dt><code>?sort=</code></dt><dd><code>datedesc</code>, <code>dateasc</code>, <code>pricedesc</code>, <code>priceasc</code>, <code>unitpriceasc</code>, <code>unitpricedesc</code>, <code>projaz</code>, <code>projza</code>.</dd></div>
+            <div><dt><code>?status=</code></dt><dd>Comma separated: <code>approved,under review,recalled,rejected</code>.</dd></div>
+            <div><dt><code>?outsource=</code></dt><dd><code>show</code> (only outsourced) or <code>hide</code>.</dd></div>
+            <div><dt><code>?currency=</code></dt><dd><code>php</code> or <code>usd</code>.</dd></div>
+            <div><dt><code>?group=</code></dt><dd><code>business unit</code>, <code>project</code> or <code>supplier</code>.</dd></div>
+            <div><dt><code>?all=true</code></dt><dd>Browse all.</dd></div>
+            <div><dt><code>?exchangerate=</code> <code>?showprice=</code></dt><dd>PHP per 1 USD (e.g. <code>57</code>), and <code>php</code>, <code>usd</code> or <code>default</code>.</dd></div>
+            <div><dt><code>?theme=</code></dt><dd><code>light</code>, <code>dark</code> or <code>system</code>.</dd></div>
+          </dl>
+        </section>
+        <section>
+          <h3 class="subhead">The records</h3>
+          <p>Suppliers reads the procurement table in Lark Base each time it opens, as you. While it reads, the copy saved from your last visit is already on screen (“Saved copy from …”), without bank details. The line under the tabs says when it last read the table (“Updated 4:44 PM”). <b>Refresh</b> reads it again now. Coming back to the tab after half an hour refreshes it quietly; if results are on screen, they stay put until you choose <b>Show them</b>.</p>
+        </section>
+        <section>
+          <h3 class="subhead">Keyboard</h3>
+          <dl class="help-rows">
+            <div><dt><kbd>/</kbd></dt><dd>Jumps to the search box (and, in it, opens the field list).</dd></div>
+            <div><dt><kbd>↑</kbd> <kbd>↓</kbd> <kbd>Enter</kbd> <kbd>Tab</kbd></dt><dd>Move through the field list and pick one; <kbd>Enter</kbd> also finishes a filter's value.</dd></div>
+            <div><dt><kbd>Backspace</kbd></dt><dd>In an empty search box, removes the last chip.</dd></div>
+            <div><dt><kbd>Esc</kbd></dt><dd>Closes the field list, then cancels the chip being typed, then clears the search. Outside the box it closes the record.</dd></div>
+          </dl>
+        </section>
+      </div>
     </div>
+  </dialog>
 
-    <!-- Filter sheet backdrop (mobile) -->
-    <div class="filter-backdrop" id="filter-backdrop"></div>
+  <div class="toasts" id="toasts" aria-live="polite"></div>
 
-    <!-- Full-screen reload overlay -->
-    <div class="reload-overlay" id="reload-overlay">
-        <div class="reload-overlay-box">
-            <div class="reload-overlay-spinner"></div>
-            <div class="reload-overlay-text">Loading latest database</div>
-        </div>
-    </div>
+  <!-- Boot watchdog: if Suppliers never starts (a module failed to load, or the page was opened
+       from a file), say so calmly instead of leaving a dead page. app.js sets <html data-booted>
+       at the end of its start-up. -->
+  <script>
+    setTimeout(function () {
+      if (document.documentElement.hasAttribute("data-booted")) return;
+      var d = document.createElement("div");
+      d.className = "banner callout callout-err";
+      d.setAttribute("role", "alert");
+      d.innerHTML = '<div><p><b>Suppliers couldn’t start.</b> Reload the page. If it keeps happening, open it from its web address (not a saved file).</p></div>' +
+                    '<button type="button" class="btn btn-sm" onclick="location.reload()">Reload</button>';
+      (document.getElementById("main") || document.body).prepend(d);
+    }, 8000);
+  </script>
 
-    <!-- Live data status toast (bottom centre) -->
-    <div class="live-toast" id="live-toast" role="status" aria-live="polite">
-        <div class="live-toast-spinner" id="live-toast-spinner"></div>
-        <svg class="live-toast-icon" id="live-toast-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M20 6 9 17l-5-5"/>
-        </svg>
-        <span class="live-toast-text" id="live-toast-text">Fetching latest data…</span>
-        <div class="live-toast-actions" id="live-toast-actions" style="display:none">
-            <button class="live-toast-btn primary" id="live-toast-reload">Reload</button>
-            <button class="live-toast-btn" id="live-toast-dismiss">Dismiss</button>
-        </div>
-        <button class="live-toast-close" id="live-toast-x" title="Dismiss" aria-label="Dismiss">
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M18 6 6 18M6 6l12 12"/>
-            </svg>
-        </button>
-    </div>
-
-    <!-- Password Modal -->
-    <div class="modal-overlay" id="modal-overlay"></div>
-    <div class="modal" id="password-modal">
-        <div class="modal-title">Database Access</div>
-        <div class="modal-desc">Enter the password to decrypt the procurement database.</div>
-        <div class="modal-error" id="modal-error"></div>
-        <div class="modal-info" id="modal-info"></div>
-        <input type="password" class="modal-input" id="modal-password" placeholder="Enter password">
-        <div class="modal-btn-row" id="modal-btn-row">
-            <button class="modal-btn" id="modal-submit">
-                <span>Unlock Database</span>
-                <div class="modal-spinner" id="modal-spinner"></div>
-            </button>
-            <button class="modal-btn modal-cancel" id="modal-cancel" style="display:none">Cancel</button>
-        </div>
-        <div class="modal-progress" id="modal-progress">
-            <div class="modal-progress-track"><div class="modal-progress-bar" id="modal-progress-bar"></div></div>
-            <div class="modal-progress-label" id="modal-progress-label">0%</div>
-        </div>
-    </div>
-
-    <!-- Search Help Modal -->
-    <div class="modal help-modal" id="help-modal">
-        <div class="help-modal-head">
-            <div class="modal-title">Search Features</div>
-            <button class="icon-btn" id="help-close" title="Close">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M18 6 6 18M6 6l12 12"/>
-                </svg>
-            </button>
-        </div>
-        <div class="help-body">
-            <div class="help-group">
-                <div class="help-group-title">Basic Search</div>
-                <div class="help-row"><code>lighting rental</code><span>Matches records containing either word. Best matches rank first.</span></div>
-                <div class="help-row"><code>"exact phrase"</code><span>Double quotes require the whole phrase to appear.</span></div>
-                <div class="help-row"><code>-word</code><span>Excludes records containing that word.</span></div>
-                <div class="help-row"><code>-"phrase here"</code><span>Excludes records containing that phrase.</span></div>
-                <div class="help-row"><code>Exact</code><span>The toggle in the search bar restricts results to literal substring matches. Turns on automatically for request numbers and project codes.</span></div>
-            </div>
-
-            <div class="help-group">
-                <div class="help-group-title">Field Filters &mdash; type <code>/</code></div>
-                <p class="help-note">Type <code>/</code> in the search bar to pick a field, then enter a value. Filters become chips and can be combined with each other and with normal search text.</p>
-                <div class="help-row"><code>project_code:'2026TEG'</code><span>Single quotes &mdash; matches if the field <em>contains</em> the text.</span></div>
-                <div class="help-row"><code>project_code:"2026TEG-P0290"</code><span>Double quotes &mdash; the field must match <em>exactly</em>.</span></div>
-                <div class="help-row"><span class="help-lbl">Custom values</span><span>Suggestions only appear once you start typing &mdash; any text works, not just a suggested value.</span></div>
-                <div class="help-row"><span class="help-lbl">Click a chip</span><span>Turns it off without deleting it (goes grey). Click again to turn it back on.</span></div>
-                <div class="help-row"><span class="help-lbl">Double-click a chip</span><span>Edits its value.</span></div>
-                <div class="help-row"><span class="help-lbl">Filter menu</span><span>The filter menu lists every field under &ldquo;Add Field Filter&rdquo; &mdash; click one to start that filter with the cursor already in the chip.</span></div>
-                <div class="help-row"><span class="help-lbl">Type filters</span><span>You can also type <code>field:'value'</code> tokens directly and press Enter to turn them into chips.</span></div>
-                <div class="help-note">Available fields:</div>
-                <div class="help-fields">
-                    <code>particular_item</code><code>business_unit</code><code>project_name</code><code>project_code</code><code>project_manager</code><code>supplier_account_name</code>
-                </div>
-            </div>
-
-            <div class="help-group">
-                <div class="help-group-title">Filters &amp; Sort</div>
-                <div class="help-row"><span class="help-lbl">Tabs</span><span>Narrow matching to Particulars, Suppliers, or Projects.</span></div>
-                <div class="help-row"><span class="help-lbl">Filter button</span><span>Sort by date, price, unit price, or project code. Filter by status, outsourcing, and currency. Group results by business unit, project, or supplier.</span></div>
-                <div class="help-row"><span class="help-lbl">Status</span><span>Only Approved is shown by default.</span></div>
-            </div>
-
-            <div class="help-group">
-                <div class="help-group-title">Shareable Links</div>
-                <p class="help-note">Search terms, filters, sorting, and display settings are written into the address bar as you change them &mdash; copy the URL to share the exact view.</p>
-                <div class="help-row"><code>?q=</code><span>Search terms, including field filters.</span></div>
-                <div class="help-row"><code>?exact=</code><span><code>true</code> or <code>false</code>.</span></div>
-                <div class="help-row"><code>?tab=</code><span><code>all</code>, <code>particulars</code>, <code>suppliers</code>, <code>projects</code>.</span></div>
-                <div class="help-row"><code>?sort=</code><span><code>dateasc</code>, <code>datedesc</code>, <code>priceasc</code>, <code>pricedesc</code>, <code>projaz</code>, <code>projza</code>.</span></div>
-                <div class="help-row"><code>?status=</code><span>Comma separated: <code>approved,under review,recalled,rejected</code>.</span></div>
-                <div class="help-row"><code>?outsource=</code><span><code>show</code> or <code>hide</code>.</span></div>
-                <div class="help-row"><code>?currency=</code><span><code>php</code> or <code>usd</code>.</span></div>
-                <div class="help-row"><code>?group=</code><span><code>none</code>, <code>business unit</code>, <code>project</code>, <code>supplier</code>.</span></div>
-                <div class="help-row"><code>?theme=</code><span><code>system</code>, <code>light</code>, <code>dark</code>.</span></div>
-                <div class="help-row"><code>?exchangerate=</code><span>PHP per 1 USD, e.g. <code>57</code>.</span></div>
-                <div class="help-row"><code>?showprice=</code><span><code>default</code>, <code>php</code>, <code>usd</code>.</span></div>
-                <div class="help-row"><code>?qoff=</code><span>Field filters that are present but switched off.</span></div>
-            </div>
-
-            <div class="help-group">
-                <div class="help-group-title">Live Data</div>
-                <p class="help-note">The page opens on the bundled database, then always fetches the latest records from the Lark base in the background. A bar at the bottom shows progress.</p>
-                <div class="help-row"><span class="help-lbl">Auto-apply (on)</span><span>The default. New data is loaded automatically when the fetch finishes (brief "Loading latest database" overlay). Toggle it in Settings.</span></div>
-                <div class="help-row"><span class="help-lbl">Auto-apply (off)</span><span>The fetch still runs, but the bar offers <b>Reload</b> / <b>Dismiss</b> so you decide when to swap — a search in progress is never disturbed.</span></div>
-                <div class="help-row"><span class="help-lbl">Force refresh</span><span>Settings → Database. Fetches and applies the latest data immediately, regardless of the toggle.</span></div>
-                <div class="help-note">A failed fetch or a short/partial read is always surfaced and never applied silently.</div>
-            </div>
-
-            <div class="help-group">
-                <div class="help-group-title">Keyboard</div>
-                <div class="help-row"><span class="help-lbl">&uarr; &darr;</span><span>Move through the field-filter list.</span></div>
-                <div class="help-row"><span class="help-lbl">Enter</span><span>Select the highlighted filter, or commit a filter value.</span></div>
-                <div class="help-row"><span class="help-lbl">Backspace</span><span>With an empty search bar, removes the last chip.</span></div>
-                <div class="help-row"><span class="help-lbl">Esc</span><span>Closes the filter list, the detail panel, or clears the search bar.</span></div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Encrypt Offer Modal -->
-    <div class="modal encrypt-offer" id="encrypt-offer-modal">
-        <div class="modal-title">Unencrypted Database</div>
-        <p>The database file is not encrypted. Would you like to encrypt it now for security?</p>
-        <div class="encrypt-offer-actions">
-            <button class="btn-primary" id="encrypt-offer-yes">Encrypt Now</button>
-            <button class="btn-secondary" id="encrypt-offer-no">Skip</button>
-        </div>
-    </div>
-
-    <!-- Settings Panel -->
-    <div class="settings-overlay" id="settings-overlay"></div>
-    <div class="settings-panel" id="settings-panel">
-        <div class="settings-header">
-            <span class="settings-title">Settings</span>
-            <button class="icon-btn" id="settings-close" title="Close settings">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M18 6 6 18M6 6l12 12"/>
-                </svg>
-            </button>
-        </div>
-
-        <!-- Search Help Section -->
-        <div class="settings-section">
-            <button class="help-btn" id="search-help-btn">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/>
-                </svg>
-                <span>Search Features &amp; Syntax</span>
-            </button>
-        </div>
-
-        <!-- Database Info Section -->
-        <div class="settings-section" id="settings-db-section" style="display:none">
-            <div class="settings-section-title">Database</div>
-            <div class="settings-db-date" id="settings-db-date"></div>
-            <label class="settings-toggle-row">
-                <span>Auto-apply latest data<br><span class="settings-toggle-sub">Always fetches; off = ask before reloading</span></span>
-                <span class="settings-switch">
-                    <input type="checkbox" id="auto-refresh-toggle" checked>
-                    <span class="settings-switch-track"></span>
-                </span>
-            </label>
-            <button class="help-btn" id="force-refresh-btn">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
-                </svg>
-                <span>Force refresh from Lark</span>
-            </button>
-        </div>
-
-        <!-- Theme Section -->
-        <div class="settings-section">
-            <div class="settings-section-title">Theme</div>
-            <div class="theme-options">
-                <button class="theme-option" data-theme="system">System</button>
-                <button class="theme-option" data-theme="light">Light</button>
-                <button class="theme-option" data-theme="dark">Dark</button>
-            </div>
-        </div>
-
-        <!-- Exchange Rate Section -->
-        <div class="settings-section">
-            <div class="settings-section-title">Exchange Rate</div>
-            <div class="exchange-rate-row">
-                <span>1 USD =</span>
-                <input type="number" class="exchange-rate-input" id="settings-exchange-rate" value="57" min="1" step="0.01">
-                <span>PHP</span>
-            </div>
-            <div class="currency-display-row">
-                <span>Show prices in:</span>
-                <div class="currency-options">
-                    <button class="currency-option active" data-currency="">Default</button>
-                    <button class="currency-option" data-currency="PHP">PHP</button>
-                    <button class="currency-option" data-currency="USD">USD</button>
-                </div>
-            </div>
-        </div>
-
-        <!-- Encrypt Section -->
-        <div class="settings-section">
-            <div class="settings-section-title">Encrypt Database File</div>
-            <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px;">
-                Upload an .xlsx or .csv file, encrypt it, and download the .enc file to place in your data/ directory.
-            </p>
-            <div class="enc-file-wrapper">
-                <button class="enc-file-btn" id="settings-enc-file-btn" type="button">Choose File</button>
-                <span class="enc-file-name" id="settings-enc-file-name">No file chosen</span>
-                <input type="file" class="enc-file-input" id="settings-enc-file" accept=".xlsx,.xlsm,.csv">
-            </div>
-            <input type="password" class="enc-password-input" id="settings-enc-password" placeholder="Encryption password">
-            <button class="enc-btn" id="settings-enc-btn">Encrypt &amp; Download</button>
-            <div class="enc-status" id="settings-enc-status"></div>
-        </div>
-    </div>
-
-    <!-- Libraries -->
-    <script src="js/papaparse.min.js"></script>
-    <script src="js/xlsx.full.min.js"></script>
-    <script type="module">
-        import * as Orama from 'https://cdn.jsdelivr.net/npm/@orama/orama@3/+esm';
-        window.Orama = Orama;
-        window.dispatchEvent(new Event('orama-ready'));
-    </script>
-
-    <!-- App Scripts -->
-    <script src="js/crypto.js"></script>
-    <script src="js/lark.js"></script>
-    <script src="js/search.js"></script>
-    <script src="js/app.js"></script>
+  <script>document.write('<script type="module" src="js/app.js?v=' + window.APP_BUILD + '"><\/script>');</script>
 </body>
 </html>

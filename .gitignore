@@ -1,0 +1,14 @@
+# The Lark app's secret for the admin script (tests/check-live.mjs): never commit
+.env
+.env.*
+!.env.example
+# Your own Claude Code permissions
+.claude/settings.local.json
+# Procurement data never belongs in this folder (the page reads it from Lark)
+*.enc
+*.xlsx
+*.xlsm
+*.csv
+# Local tooling
+node_modules/
+__pycache__/

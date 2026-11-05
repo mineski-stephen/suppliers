@@ -1,0 +1,238 @@
+/* Suppliers: the few styles of its own, on top of mineski-base.css. Tokens only: no colour is
+   written here (the theme and the base define them all). */
+
+/* ---- the search page: the list, and a record beside it ------------------------------------ */
+.view-search.active { padding-top: 18px; }
+/* The list and a record side by side, as on the old page: a centred row. Opening a record grows the
+   panel's width from 0 (.3s ease) while it fades in (.2s ease), so the list moves aside; closing runs
+   it backwards. The list keeps its 820 px; the panel takes the rest of the row (at least 480 px, 400 px
+   on a window under 1100 px, where the list gives way). Below 769 px the panel covers the screen. */
+.desk { display: flex; justify-content: center; align-items: flex-start; }
+.desk-main { flex: 0 1 820px; min-width: 0; max-width: 820px; }
+@media (min-width: 1280px) {   /* the one side-by-side view allowed past 1200 px (typography-and-layout.md) */
+  main:has(.view-search.active) { transition: max-width .3s ease; }
+  body.detail-open main:has(.view-search.active) { max-width: 1600px; }
+}
+
+/* the search head stays under the top bar while the results scroll */
+.qhead { position: sticky; top: var(--topbar); z-index: 20; padding: 8px 0 10px; margin: 0 -2px; transition: padding-top .4s var(--ease);
+         background: color-mix(in srgb, var(--bg) 88%, transparent);
+         backdrop-filter: saturate(1.4) blur(14px); -webkit-backdrop-filter: saturate(1.4) blur(14px); }
+
+/* the search box: free text plus field-filter chips */
+.qbox { position: relative; display: flex; align-items: center; gap: 4px; min-height: 54px; padding: 6px 8px 6px 46px;
+        border-radius: var(--r); border: 1px solid var(--line-2); background: var(--surface); box-shadow: var(--shadow-md); cursor: text;
+        transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease); }
+.qbox:focus-within { border-color: var(--focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent), var(--shadow-md); }
+.qbox-icon { position: absolute; left: 16px; top: 17px; width: 20px; height: 20px; color: var(--muted); pointer-events: none; }
+.qfield { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 2px 0; }
+.qchips { display: contents; }
+.qbox .qinput { flex: 1 1 160px; width: auto; min-width: 110px; min-height: 38px; padding: 6px 2px; border: 0; border-radius: 0;
+                background: none; box-shadow: none; font-size: 16px; }
+.qbox .qinput:focus { box-shadow: none; border: 0; }
+.qbox .qinput[readonly] { cursor: progress; }
+.qbox .qinput.in-chip { flex: none; min-width: 4px; height: 24px; min-height: 0; padding: 0; font: 700 13px var(--mono); color: var(--ink); }
+@media (hover: none) { .qbox .qinput.in-chip { font-size: 16px; } }   /* 16 px keeps iOS from zooming in */
+
+.qchip { display: inline-flex; align-items: center; max-width: 100%; height: 30px; border-radius: var(--r-pill);
+         background: var(--brand-soft); color: var(--on-brand-soft); font-size: 13px; font-weight: 700; }
+.qchip-body { display: inline-flex; align-items: center; gap: 3px; min-width: 0; height: 100%; padding: 0 2px 0 12px; border: 0;
+              border-radius: var(--r-pill) 0 0 var(--r-pill); background: none; color: inherit; font: inherit; }
+.qchip-field { font: 600 12px var(--mono); opacity: .8; }
+.qchip-val { font: 700 12.5px var(--mono); max-width: 26ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qchip-q { font: 700 13px var(--mono); }
+.qchip-x { display: inline-grid; place-items: center; width: 26px; height: 26px; margin-right: 2px; padding: 0; border: 0; border-radius: 50%;
+           background: none; color: inherit; flex: none; }
+.qchip-x:hover { background: color-mix(in srgb, var(--brand) 20%, transparent); }
+.qchip-x .i { width: 13px; height: 13px; }
+.qchip.is-exact { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand) 50%, transparent); }
+.qchip.is-off { background: var(--surface-2); color: var(--muted); box-shadow: inset 0 0 0 1px var(--line); }
+.qchip.is-off .qchip-val { text-decoration: line-through; }
+.qchip.is-pending { gap: 1px; padding-left: 12px; background: var(--surface); color: var(--on-brand-soft);
+                    box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--brand) 70%, transparent); }
+.qexact { flex: none; height: 32px; }
+.qexact .i { opacity: .45; }
+.qexact[aria-pressed="true"] .i { opacity: 1; }
+.qbox .suggest { left: -1px; right: -1px; animation: menuIn .15s var(--ease) both; }
+/* on the landing the search sits lower, and moves up when results come (as before) */
+.view-search:not(.has-results) .qhead { padding-top: 9vh; }
+.suggest li b.mono { font-size: 13.5px; }
+
+/* the tabs and the list tools under the box */
+.qbar { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.qbar .tabs { position: static; z-index: auto; flex: 1; min-width: 0; margin: 0; }   /* a flex item keeps a z-index even when static: it would cover the suggestions */
+.qbar .tab { border: 0; background: none; }
+.qbar .tab[aria-selected="true"] { background: var(--brand-soft); }
+.qbar-tools { display: flex; gap: 6px; flex: none; }
+.filter-btn { position: relative; }
+.filter-btn .count { position: absolute; top: -6px; right: -6px; }
+
+.list-status { margin: 8px 2px 4px; }
+.list-status .spinner { width: 14px; height: 14px; border-width: 2px; }
+.status-warn { color: var(--warn); }
+
+/* ---- nothing searched yet ---------------------------------------------------------------------- */
+.home { display: grid; gap: 16px; margin-top: 10px; }
+.home > * { min-width: 0; }   /* the strip scrolls inside its own width; it must not widen the page */
+.recent-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.recent-tools { display: flex; align-items: center; gap: 6px; }
+.recent-wrap { overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scrollbar-width: none; margin: 0 -6px; padding: 4px 6px 10px;
+               cursor: grab; user-select: none; -webkit-user-select: none; }
+.recent-wrap::-webkit-scrollbar { display: none; }
+.recent-wrap.is-dragging { cursor: grabbing; }
+.recent-wrap.is-dragging .recent-card { pointer-events: none; }
+.recent-track { display: flex; gap: 12px; width: max-content; }
+.recent-card { flex: none; width: 232px; height: 188px; padding: 14px 16px; gap: 4px; cursor: pointer; -webkit-user-drag: none; }
+.recent-card.is-entering { animation: rise .45s var(--ease) both; animation-delay: calc(var(--i, 0) * 40ms); }
+.recent-card h3 { font-size: 15px; margin-top: 2px; }
+.recent-no { font: 700 12px var(--mono); color: var(--muted); }
+.recent-project { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.recent-foot { display: flex; justify-content: space-between; gap: 8px; font-variant-numeric: tabular-nums; }
+.recent-foot b { color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.recent-more { align-items: center; justify-content: center; text-align: center; gap: 8px; font: inherit; color: var(--ink);
+               border-style: dashed; border-color: var(--line-2); background: var(--surface-2); }
+.recent-more b { font-size: 15px; }
+.recent-more-icon { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; background: var(--brand-soft); color: var(--on-brand-soft); }
+.recent-more:hover { border-color: var(--brand-strong); }
+
+/* ---- results ------------------------------------------------------------------------------------- */
+.results { margin-top: 6px; }
+.results-count { margin: 4px 2px 10px; font-size: 13px; font-weight: 700; color: var(--muted); }
+.results-count:empty { display: none; }
+.result { display: block; padding: 14px 16px; text-decoration: none; color: var(--ink);
+          transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease), background var(--t-fast) var(--ease); }
+.result.is-entering { animation: rise .5s var(--ease) both; animation-delay: calc(var(--i, 0) * 40ms); }
+.result:hover { border-color: color-mix(in srgb, var(--brand) 45%, transparent); box-shadow: var(--shadow-md); }
+.result[aria-current="true"] { border-color: color-mix(in srgb, var(--brand) 60%, transparent); background: var(--brand-soft); box-shadow: var(--shadow-md); }
+/* the old page's layout: request no. and status · the item · supplier, prices on the right · project and date */
+.result-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
+.result-no { font: 600 12.5px var(--mono); color: var(--muted); }
+.result-title { font-size: 15.5px; font-weight: 600; line-height: 1.4; margin: 0 0 6px; letter-spacing: -.005em; overflow-wrap: anywhere; }
+.result-meta { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 4px; }
+.result-supplier { flex: 1; min-width: 0; font-size: 13.5px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.result-pricing { flex: none; display: grid; justify-items: end; gap: 3px; text-align: right; font-variant-numeric: tabular-nums; }
+.result-unit { font-size: 12.5px; font-weight: 700; color: var(--brand-text); white-space: nowrap; background: var(--surface-2); padding: 2px 8px; border-radius: var(--r-xs); }
+.result-total { font-size: 14px; font-weight: 700; color: var(--brand-text); white-space: nowrap; }
+.result-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.result-project { max-width: 240px; font-size: 12px; color: var(--muted); background: var(--surface-2); padding: 2px 8px; border-radius: var(--r-xs);
+                  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.result-date { font-size: 12px; color: var(--muted); }
+.result[aria-current="true"] .result-unit, .result[aria-current="true"] .result-project { background: var(--surface); }
+mark { background: color-mix(in srgb, var(--brand) 22%, transparent); color: inherit; border-radius: 3px; padding: 0 1px; }
+.out-badge { margin: 0 2px; vertical-align: 1px; }
+.more-row { display: flex; justify-content: center; margin-top: 14px; }
+.more-row:has(> [hidden]) { display: none; }
+.hidden-note .linkish { font-size: inherit; }
+
+/* grouped results: one fold per group, with its total */
+.rgroup { border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--shadow-sm); }
+.rgroup > summary { list-style: none; display: flex; align-items: center; gap: 10px; padding: 12px 16px; cursor: pointer; font-weight: 700;
+                    border-radius: var(--r-lg); }
+.rgroup > summary::-webkit-details-marker { display: none; }
+.rgroup > summary::before { content: ""; flex: none; width: 7px; height: 7px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted);
+                            transform: rotate(-45deg); transition: transform var(--t) var(--ease); }
+.rgroup[open] > summary::before { transform: rotate(45deg); }
+.rgroup > summary:hover { background: var(--surface-2); }
+.rgroup-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.rgroup-sum { white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--ink-2); }
+.rgroup-items { padding: 2px 10px 10px; }
+.rgroup-items .result { box-shadow: none; }
+
+/* ---- one record ----------------------------------------------------------------------------------- */
+.detail { position: sticky; top: calc(var(--topbar) + 16px); max-height: calc(100dvh - var(--topbar) - 32px); display: flex; flex-direction: column;
+          overflow: hidden; flex: none; width: 0; margin-left: 0; opacity: 0; pointer-events: none;
+          transition: width .3s ease, margin-left .3s ease, opacity .2s ease; }   /* the old page's transition */
+/* open: the rest of the row beside the 820 px list, never under 480 px */
+body.detail-open .detail { width: max(480px, 100% - 844px); margin-left: 24px; opacity: 1; pointer-events: auto; }
+.detail-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 12px 4px 20px; }
+.detail-body { overflow: auto; overscroll-behavior: contain; padding: 4px 20px 22px; display: grid; gap: 18px; align-content: start; }
+.detail-title { font-size: 20px; font-weight: 800; letter-spacing: -.02em; line-height: 1.3; overflow-wrap: anywhere; }
+.detail-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin-top: -8px; }
+.detail-meta .linkish { font-size: 12px; text-decoration-thickness: 1.5px; }   /* the size of the status badge beside it */
+.detail-meta .linkish .i { width: 13px; height: 13px; }
+.detail-body.is-fresh > * { animation: fade .3s ease both; }   /* a record fades in, as before */
+/* The skeleton (the old page's): every line of text becomes a shimmering bar of its own size. */
+.detail-body.is-loading :is(.detail-title, .detail-meta > *, .dgroup .subhead, .df dt, .dv, .dlink, .dnote) {
+  width: fit-content; color: transparent !important; border-color: transparent !important; box-shadow: none; text-decoration: none;
+  border-radius: var(--r-xs); background: linear-gradient(90deg, var(--line) 25%, var(--line-2) 50%, var(--line) 75%);   /* shows on the panel and in the field boxes */
+  background-size: 200% 100%; animation: shimmer 1.5s ease-in-out infinite; pointer-events: none; }
+.detail-body.is-loading :is(.detail-title, .detail-meta, .df dd) * { color: transparent !important; background: none; border-color: transparent; }
+.detail-body.is-loading .i, .detail-body.is-loading mark { visibility: hidden; }
+.detail-body.is-loading .dv { margin: 0; padding: 0 2px; }
+.dgroup .subhead { display: block; margin-bottom: 8px; }
+.dfields { margin: 0; display: grid; padding: 6px 8px; border-radius: var(--r); background: var(--surface-2); border: 1px solid var(--line); }
+.df { display: grid; gap: 2px; padding: 7px 0; border-bottom: 1px solid var(--line); }   /* label over value: room for long values */
+.df:last-child { border-bottom: 0; }
+.df dt { font-size: 11px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); overflow-wrap: anywhere; }
+.df dd { margin: 0; min-width: 0; }
+.dv { display: block; width: calc(100% + 12px); margin: -2px -6px; padding: 2px 6px; border: 0; border-radius: var(--r-xs); background: none;
+      color: var(--ink); font-size: 14px; font-weight: 600; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; cursor: copy;
+      transition: background var(--t-fast) var(--ease); }
+.dv:hover { background: var(--surface); }
+.dv.is-copied { animation: landed .7s var(--ease); }   /* the old copy flash */
+.dv.is-strong { font-weight: 800; font-variant-numeric: tabular-nums; }
+.dlink { display: inline-flex; align-items: center; gap: 5px; font-size: 14px; font-weight: 700; overflow-wrap: anywhere; }
+.dlink .i { width: 14px; height: 14px; flex: none; }
+.detail-backdrop { display: none; }
+
+@media (min-width: 769px) and (max-width: 1100px) {
+  body.detail-open .detail { width: max(400px, 100% - 844px); }
+}
+@media (max-width: 768px) {   /* the whole screen; it fades in and out */
+  .detail { position: fixed; inset: 0; z-index: 90; width: auto; max-height: none; margin: 0; border-radius: 0; border: 0;
+            transition: opacity .2s ease; }
+  body.detail-open .detail { width: auto; margin: 0; }
+  body.detail-open { overflow: hidden; }
+  .detail-head { padding-top: calc(12px + env(safe-area-inset-top)); }
+}
+
+/* ---- filter and sort ---------------------------------------------------------------------------------- */
+.filter-pop { width: min(400px, calc(100vw - 16px)); padding: 0; display: flex; flex-direction: column; overflow: hidden; }
+.fp-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 10px 4px 18px; }
+.fp-head h2 { font-size: 15px; font-weight: 800; letter-spacing: -.01em; }
+.fp-body { overflow: auto; overscroll-behavior: contain; padding: 8px 18px 14px; display: grid; gap: 16px; }
+.fp-sec { display: grid; gap: 8px; }
+.fp-sec .select, .fp-sec select { width: 100%; }
+.fp-sec .chip-opt .i { width: 13px; height: 13px; }
+.fp-foot { display: flex; justify-content: flex-end; padding: 10px 14px 12px; border-top: 1px solid var(--line); }
+.filter-backdrop { display: none; }
+@media (max-width: 640px) {   /* a bottom sheet */
+  .filter-pop { left: 0; right: 0; top: auto; bottom: 0; width: 100%; max-height: 84dvh; border-radius: var(--r-xl) var(--r-xl) 0 0;
+                border-bottom: 0; padding-bottom: env(safe-area-inset-bottom); animation: sheetUp .28s var(--ease) both; }
+  .filter-backdrop { display: block; position: fixed; inset: 0; z-index: 115; background: var(--backdrop); animation: fade .22s var(--ease); }
+  .filter-backdrop[hidden] { display: none; }
+}
+@keyframes sheetUp { from { opacity: 0; transform: translateY(24px); } to { opacity: 1; transform: none; } }
+
+/* ---- search help ----------------------------------------------------------------------------------- */
+.help .help-head { grid-template-columns: minmax(0, 1fr) auto; align-items: center; padding-bottom: 8px; }
+.help-body { gap: 22px; padding-bottom: 24px; }
+.help-body p { font-size: 14px; color: var(--ink-2); }
+.help-body p + .help-rows, .help-body .subhead + p { margin-top: 6px; }
+.help-rows { margin: 8px 0 0; border-top: 1px solid var(--line); }
+.help-rows > div { display: grid; grid-template-columns: minmax(140px, 38%) minmax(0, 1fr); gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 13.5px; }
+.help-rows dt { font-weight: 700; overflow-wrap: anywhere; }
+.help-rows dd { margin: 0; color: var(--ink-2); }
+.help-fields { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+
+/* ---- settings: prices ------------------------------------------------------------------------------- */
+.rate-row { display: flex; align-items: center; gap: 10px; font-weight: 700; color: var(--ink-2); }
+.rate-row input { width: 120px; }
+.field .rate-help { color: var(--danger); }
+.rate-help:empty { display: none; }
+#schemaBox ul { margin: 0; padding-left: 18px; }
+
+/* ---- phones ------------------------------------------------------------------------------------------ */
+@media (max-width: 640px) {
+  .view-search.active { padding-top: 10px; }
+  .qbox { padding-left: 40px; }
+  .qbox-icon { left: 13px; }
+  .qbar .tabs { height: 46px; }
+  .qbar .tab { height: 36px; }
+  #openLark { display: none; }   /* Settings > Connections has "Open in Lark" */
+  .recent-card { width: 210px; }
+}
+@media (max-width: 420px) {
+  .qexact { padding: 5px 9px; }
+}
+.dnote { margin-top: 6px; font-size: 12.5px; }
