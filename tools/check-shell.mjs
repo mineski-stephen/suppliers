@@ -108,10 +108,11 @@ function run() {
   if (ok(!!csp, "CSP meta")) {
     const connect = ((csp.match(/connect-src ([^;]+)/) || [])[1] || "").trim().split(/\s+/);
     const config = readFileSync(join(ROOT, "js", "config.js"), "utf8");
-    const proxy = (config.match(/lark:\s*\{\s*url:\s*"([^"]+)"/) || [])[1] || "";
+    const proxies = [...(((config.match(/lark:\s*\{\s*urls:\s*\[([^\]]*)\]/) || [])[1] || "").matchAll(/"([^"]+)"/g))].map((m) => m[1]);
     ok(/default-src 'self'/.test(csp), "CSP default-src is 'self'");
-    ok(connect.every((s) => s === "'self'" || s === proxy || s === "http://127.0.0.1:*"),
-       `connect-src lists only 'self', ${proxy || "the proxy"} and http://127.0.0.1:* (has: ${connect.join(" ")})`);
+    ok(proxies.length > 0 && connect.every((s) => s === "'self'" || proxies.includes(s) || s === "http://127.0.0.1:*"),
+       `connect-src lists only 'self', the proxies (${proxies.join(", ") || "none found in config.js"}) and http://127.0.0.1:* (has: ${connect.join(" ")})`);
+    ok(proxies.every((p) => connect.includes(p)), "connect-src lists every proxy in SERVICES.lark.urls");
     ok(!/cdn\.|jsdelivr|unpkg/.test(csp) && !/<script[^>]+src="https?:/.test(html), "no script from a CDN");
   }
   ok(/<title>Suppliers · Mineski<\/title>/.test(html), "the title is “Suppliers · Mineski”");

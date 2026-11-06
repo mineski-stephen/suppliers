@@ -8,7 +8,7 @@ import * as settings from "./settings.js";
 import { cfg, isServiceUrl, localPage } from "./settings.js";
 import * as auth from "./auth.js";
 import { larkService, onAnyService } from "./net.js";
-import { RULES, ENV_LABEL } from "./config.js";
+import { RULES, ENV_LABEL, SERVICES } from "./config.js";
 import { dayLabel } from "./rows.js";
 import { $, h, ic, initTheme, radioKeys, toast, fmt } from "./ui.js";
 
@@ -30,7 +30,8 @@ function serviceLine(svc) {
   const mine = cfg().overrides.filter((o) => o.startsWith("Connection service"));
   const note = mine.length ? (mine.some((o) => o.includes("page link"))
     ? " (test address from the page link; open the page with ?reset to go back)" : " (test address from Advanced)") : "";
-  return [tone, `${text}${svc.host() ? ` · ${svc.host()}` : ""}${note}`];
+  const backup = s.backup ? " (the backup: the usual one can't be reached)" : "";
+  return [tone, `${text}${svc.host() ? ` · ${svc.host()}` : ""}${backup}${note}`];
 }
 
 export function createSettingsView(ctx) {
@@ -98,7 +99,7 @@ export function createSettingsView(ctx) {
     $("#advanced").hidden = !localPage;
     const s = settings.get();
     if (document.activeElement !== $("#proxyInput")) $("#proxyInput").value = s.larkUrl || "";
-    $("#proxyInput").placeholder = settings.cfg().larkUrl;
+    $("#proxyInput").placeholder = SERVICES.lark.urls[0];
     if (!larkService.isFresh()) larkService.wake();   // retry on open
     paint();
   }

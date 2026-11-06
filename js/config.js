@@ -12,12 +12,15 @@
 
 /* version: bump it with every release and add an entry to CHANGELOG.md (newest first, same number).
    The top bar shows it beside the name. */
-export const APP = { name: "Suppliers", key: "suppliers", version: "1.1.0", env: "live" };   // env: "live" | "test"
+export const APP = { name: "Suppliers", key: "suppliers", version: "1.2.0", env: "live" };   // env: "live" | "test"
 export const ENV_LABEL = APP.env === "test" ? "Test copy" : "";   // display only, never a gate
 
 export const SERVICES = {   // hosted defaults; `min` and `headers` are checked on every wake
   // The shared Lark proxy reports no version yet, so only its name is checked (min: "").
-  lark: { url: "https://lark-proxy-dwiw.onrender.com", service: "lark-cors-proxy", min: "", headers: ["Authorization"] },
+  // The Lark proxy (tech/lark-proxy) runs in two places, tried in this order: Cloudflare Workers
+  // (never sleeps), then Render (the backup). Both must be in index.html's connect-src.
+  lark: { urls: ["https://lark-proxy.stephen-lin.workers.dev", "https://lark-proxy-dwiw.onrender.com"],
+          service: "lark-cors-proxy", min: "2.0.0", headers: ["Authorization"] },
 };
 
 // The same Lark app as Fetch and Polaris; the Lark proxy holds its secret. Every address

@@ -13,7 +13,7 @@ anything in Lark.
 > 1. On the Lark app (`cli_aab0716138b8ded3`), *Security Settings > Redirect URLs*: make sure
 >    `http://127.0.0.1:9125/` and the hosted address (for example `https://<account>.github.io/suppliers/`)
 >    are listed. (`http://127.0.0.1:9125/` already passes the page's own check.)
-> 2. On the Lark proxy (Render), add the hosted origin (for example `https://<account>.github.io`) and
+> 2. On the Lark proxy (on both Cloudflare and Render), add the hosted origin (for example `https://<account>.github.io`) and
 >    `http://127.0.0.1:9125` to `ALLOWED_ORIGINS`, or every call from that address gets "origin not allowed".
 > 3. Give everyone who should use Suppliers access to the procurement Base in Lark, and make sure they're
 >    inside the Lark app's *Availability*. A login only sees what the person can open.
@@ -150,7 +150,9 @@ See [Security and privacy](#security-and-privacy) for when the saved copy is del
 ```
  Browser: index.html (static, no build step, ES modules)
    │  every Lark call carries the person's own login token
-   └──────────────▶ Lark proxy (Render, lark-proxy-dwiw.onrender.com) ──▶ Lark Open API
+   └──────────────▶ Lark proxy ──▶ Lark Open API
+                     Cloudflare (lark-proxy.stephen-lin.workers.dev, used first, never sleeps)
+                     or Render (lark-proxy-dwiw.onrender.com, the backup): same code and settings;
                      adds the app secret only to the login exchange
  Lark Base is the database. Search runs in the page (Orama, js/vendor/orama.js).
 ```
@@ -218,7 +220,7 @@ it under Settings > Advanced. A red **Overridden** badge shows while it's on.
 It's a static folder: publish it as it is (GitHub Pages or any https host). Then:
 
 1. Add the page's address, with the trailing slash, to the Lark app's Redirect URLs.
-2. Add its origin to the Lark proxy's `ALLOWED_ORIGINS` on Render.
+2. Add its origin to the Lark proxy's `ALLOWED_ORIGINS`, on both Cloudflare and Render.
 3. Open it, log in, and check Settings > Connections says "Awake" and "Connected".
 
 Bump `APP.version` and add a `CHANGELOG.md` entry with every release (`npm run check:shell`
@@ -323,8 +325,9 @@ typed; rich text with a link inside no longer shows stray commas.
 | "Lark says your account can't open the procurement Base. Ask its owner to give you access." | Ask the Base owner to share it with you. |
 | "Suppliers can't use the procurement table." + "Procurement: column “Status” is missing." | Someone renamed or removed a column in Lark. Rename it back, or update `js/schema.js`. |
 | "Waking up the connection…" | Wait: the free Render service sleeps when idle and takes up to a minute. |
-| "Unreachable (no answer for 3 minutes)" | Render is down or the address is wrong. Try again later; check Settings > Connections. |
-| "Suppliers can't reach its connection service." (red banner) | An ad blocker or privacy extension is blocking `lark-proxy-dwiw.onrender.com`. Allow it, then reload. |
+| "Unreachable (no answer for 3 minutes)" | Neither copy of the Lark proxy answered (Cloudflare, then Render). Try again later; check Settings > Connections. |
+| "Suppliers can't reach its connection service." (red banner) | An ad blocker or privacy extension is blocking `lark-proxy.stephen-lin.workers.dev` (and `lark-proxy-dwiw.onrender.com`, the backup). Allow it, then reload. |
+| Settings > Connections: "… (the backup: the usual one can't be reached)" | The connection service on Cloudflare didn't answer, so Suppliers is using the copy on Render. Everything works; the first call after a while may wait for Render to wake up. If it lasts, check the Worker on Cloudflare (its Logs say why). |
 | "Out of date (…). Ask the admin to redeploy it." | The owner redeploys the Lark proxy. |
 | "Your login ends at 4:30 PM." | Press **Log in again** to keep going without a break. |
 | "Your login ended after about 2 hours. Log in again to keep going." | Log in again; your search comes back. |

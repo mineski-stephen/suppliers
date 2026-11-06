@@ -9,6 +9,18 @@ or links stop working), add an entry here with the same number and the date,
 and say what changed in the team's words. `npm run check:shell` fails if the
 two numbers differ.
 
+## 1.2.0 · Nov 6, 2026
+
+- **A backup connection service.** The Lark connection service now runs in two
+  places: Cloudflare (used first, and it never sleeps, so "Waking up the
+  connection…" should rarely appear) and Render (the backup). If one can't be
+  reached, Suppliers switches to the other on its own, and Settings > Connections
+  says when it's using the backup. Nothing to do on your side.
+- Suppliers only reads, so a read that can't reach one connection service is
+  simply asked again through the other.
+- The connection service must be version 2.0.0 or newer; an older one shows as
+  "Out of date" in Settings.
+
 ## 1.1.0 · Nov 5, 2026
 
 - **One login for Suppliers, Fetch and Polaris.** Log in to any of them and you're
