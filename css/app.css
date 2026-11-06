@@ -9,6 +9,12 @@
    on a window under 1100 px, where the list gives way). Below 769 px the panel covers the screen. */
 .desk { display: flex; justify-content: center; align-items: flex-start; }
 .desk-main { flex: 0 1 820px; min-width: 0; max-width: 820px; }
+/* The record panel is sticky, and a sticky box can't go below the end of its row. The page's own bottom
+   padding sits outside the row, so at the very bottom of the results the panel got pushed up and its
+   top cut off. While a record is open the padding moves inside the row: the row reaches the end of the
+   page, and the panel stays where it is. */
+body.detail-open main:has(.view-search.active) { padding-bottom: 0; }
+body.detail-open .view-search .desk-main { padding-bottom: 96px; }
 @media (min-width: 1280px) {   /* the one side-by-side view allowed past 1200 px (typography-and-layout.md) */
   main:has(.view-search.active) { transition: max-width .3s ease; }
   body.detail-open main:has(.view-search.active) { max-width: 1600px; }

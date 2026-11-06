@@ -612,11 +612,14 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && S.view === "search" && S.open && !document.querySelector("dialog[open]") && !filters.isOpen()) closeRecord();
 });
 // A click outside the open record closes it (as on the old page). Clicks on a card (they open or switch
-// records), a group's header, a toast, the filter panel, a menu or a dialog don't count.
+// records), a group's header, a toast, the filter panel, a menu or a dialog don't count. Nor do the top
+// bar and links: they go somewhere (the gear opens Settings), and closing first would undo that, since
+// closing a record goes Back in the browser's history.
 document.addEventListener("click", (e) => {
   if (S.view !== "search" || !S.open) return;
   if (!e.target.isConnected || document.querySelector("dialog[open]") || filters.isOpen()) return;
   if (e.target.closest("#detail, a.result, .recent-card, .rgroup > summary, .toasts, .popover, .ctx-menu, .filter-backdrop")) return;
+  if (e.target.closest(".topbar, a[href]")) return;
   if (String(getSelection() || "").trim()) return;   // ending a text selection isn't a click outside
   closeRecord();
 });
