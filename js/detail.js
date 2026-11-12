@@ -2,13 +2,15 @@
  * The detail panel: everything about one procurement record, in four groups. Beside the
  * results on wide screens; a sheet over the page below 1100 px (full screen on phones).
  * Click a value to copy it. Empty values (and Lark's "None") are left out.
+ * A CE line item (the Line Items tab) gets its own groups: the line, the project, where it's from
+ * in the CE, and what was actually paid (each purchase order number searches the records).
  *
- * ctx: { S, prefs() -> { rate, show }, close() }.
+ * ctx: { S, prefs() -> { rate, show }, close(), searchFor(text) }.
  */
 import { $, h, ic, copyText, toast, copyable, reduceMotion } from "./ui.js";
 import { dayLabel, dateTimeLabel } from "./rows.js";
 import { priceText, currencyOf } from "./query.js";
-import { statusBadge, itemNodes } from "./present.js";
+import { statusBadge, itemNodes, lineBadge, lineQty } from "./present.js";
 
 // The groups and their columns, as before. Labels drop the "Particulars_" / "Supplier Details_" prefix.
 export const GROUPS = [
@@ -43,6 +45,9 @@ const copyValue = (text, strong, what) => {
   });
   return b;
 };
+
+const pct = (v) => (v === null || v === undefined || v === "" ? "" : `${(Number(v) * 100).toLocaleString("en-US", { maximumFractionDigits: 1 })}%`);
+const num = (v) => (v === null || v === undefined || v === "" ? "" : Number(v).toLocaleString("en-US", { maximumFractionDigits: 2 }));
 
 export function createDetail(ctx) {
   const { S } = ctx;
@@ -80,10 +85,59 @@ export function createDetail(ctx) {
     return h("div", { class: "df" }, h("dt", null, label(f)), h("dd", null, value));
   }
 
+  /** One label and value of a CE line item (left out when empty). */
+  function lineField(labelText, value, { strong = false, what = "" } = {}) {
+    const v = String(value ?? "").trim();
+    if (!v) return null;
+    return h("div", { class: "df" }, h("dt", null, labelText), h("dd", null, copyValue(v, strong, what)));
+  }
+
+  /** The groups of a CE line item. */
+  function lineGroups(row) {
+    const { show, rate } = ctx.prefs();
+    const money = (v) => priceText(v, "PHP", show, rate);
+    const flags = [row.inactive ? "No quantity: not part of this CE, kept as a price" : "", row.waived ? "Waived" : "", row.free ? "Free" : "",
+      row.contingency ? "Contingency" : "", row.is_package ? "Package" : ""].filter(Boolean).join(" · ");
+    const pos = String(row.po_numbers || "").split(/[;,\s]+/).filter(Boolean);
+    const poNode = pos.length ? h("div", { class: "df" }, h("dt", null, "Purchase orders"), h("dd", { class: "po-list" },
+      pos.map((po) => h("button", { type: "button", class: "linkish code", title: "Search the purchase orders for this number",
+        onclick: () => ctx.searchFor(po) }, po)))) : null;
+    const groups = [
+      ["Cost estimate line", [
+        lineField("Quantity", lineQty(row)), lineField("Per", row.per),
+        lineField("Unit cost", money(row.unit_price_php), { strong: true, what: "unit cost" }),
+        lineField("Line cost", money(row.base_price_php), { strong: true, what: "line cost" }),
+        lineField("Markup", pct(row.markup)), lineField("Gross profit", money(row.gross_profit_php), { what: "gross profit" }),
+        lineField("Client price", money(row.client_price_php), { strong: true, what: "client price" }),
+        lineField("Category", row.category), lineField("Section", [row.section, row.subsection].filter(Boolean).join(" › ")),
+        lineField("Standard item", row.item), lineField("Method", [row.method, row.sourcing].filter(Boolean).join(" · ")),
+        lineField("Remarks", row.remarks), lineField("Package contents", row.package_contents), lineField("Notes", flags)]],
+      ["Project", [
+        lineField("Project code", row.project_code, { what: "project code" }), lineField("Project name", row.project_name),
+        lineField("Client", row.client), lineField("Outcome", row.outcome), lineField("Business unit", row.business_unit),
+        lineField("Entity", row.entity), lineField("Budget tier", row.budget_tier)]],
+      ["Where it's from", [
+        lineField("CE workbook", row.source_file), lineField("Tab", row.source_tab), lineField("Row", num(row.source_row)),
+        lineField("In the final CE", row.in_final ? "Yes" : `No${row.version_role ? ` (${row.version_role})` : ""}`),
+        lineField(row.n_versions > 1 ? `Also in ${row.n_versions} versions` : "Versions", row.versions),
+        lineField("Price date", dayLabel(row.price_date))]],
+      ["Actual purchases", [poNode,
+        lineField("Paid", money(row.actual_php), { strong: true, what: "amount paid" }),
+        lineField("Saved against the CE", money(row.savings_php), { what: "savings" }),
+        lineField("Match", row.match_confidence ? `${row.match_confidence} confidence` : "")]],
+    ];
+    const out = groups.map(([title, fields]) => {
+      const f = fields.filter(Boolean);
+      return f.length ? h("section", { class: "dgroup" }, h("h3", { class: "subhead" }, title), h("dl", { class: "dfields" }, f)) : null;
+    }).filter(Boolean);
+    if (!pos.length && !row.actual_php) out.push(h("p", { class: "hint dnote" }, "No purchase order was matched to this line."));
+    return out;
+  }
+
   /** Draw the open record, or close the panel: it slides out the way it came in (instant: at once,
    *  e.g. when the login ends and nothing may stay on screen). */
   function render({ instant = false } = {}) {
-    const row = S.open ? S.byId.get(S.open) : null;
+    const row = S.open ? S.byId.get(S.open) || S.lineById.get(S.open) || null : null;
     if (!row) {
       shown = null;
       document.body.classList.remove("detail-open");
@@ -107,6 +161,17 @@ export function createDetail(ctx) {
         void body.offsetWidth;
         body.classList.add("is-fresh");
       }, 500);
+    }
+    $("#detail .detail-head .subhead").textContent = row.$line ? "CE line item" : "Order details";
+    if (row.$line) {
+      body.replaceChildren(
+        h("h2", { class: "detail-title", id: "detailTitle" }, row.particular || row.item || "No particular"),
+        h("div", { class: "detail-meta" },
+          row.project_code ? copyable(row.project_code, { cls: "code", label: "project code" }) : null,
+          lineBadge(row)),
+        ...lineGroups(row));
+      body.scrollTop = changed ? 0 : keep;
+      return;
     }
     body.replaceChildren(
       h("h2", { class: "detail-title", id: "detailTitle" }, itemNodes(row["Particulars_Item"] || "No item name", [])),

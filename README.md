@@ -119,6 +119,35 @@ Dates are shown as Lark shows them (Manila time, UTC+8), "Oct 14, 2026".
 
 Suppliers writes nothing to Lark.
 
+### Line Items (CE line items)
+
+The **Line Items** tab searches the lines of past cost estimates (CEs): one row per distinct line
+per CE workbook, about 12,000 of them, built by the CE pipeline (`appraisal/internal/`) and kept
+in a Cloudflare D1 database. They come from the CE service **anthropic-ce**
+(`https://anthropic-ce.stephen-lin.workers.dev`, `GET /lines`, `SERVICES.ce` in `js/config.js`),
+read at the same time as the procurement records (once the Lark proxy has answered), 2,000 a page,
+as the person who logged in. The service checks
+the login against the same procurement table, so whoever can use Suppliers can see them,
+**including CE markups and client prices**.
+
+- Same search box and rules (words with typo tolerance, "phrases", `-word`, Exact, and the
+  `particular_item`, `project_code`, `project_name` and `business_unit` field filters). The count
+  beside the tab follows the search and the filters.
+- **Its own filters** (the funnel button on that tab; the purchase-order filters stay separate):
+  final CE only or other versions only, project outcome, category, with or without a matched
+  purchase order; sort by price date, unit cost, line cost, markup or project code; group by
+  project, category or business unit with the total line cost. Shareable links keep them
+  (`lsort`, `lfinal`, `loutcome`, `lcat`, `lpo`, `lgroup`, values separated by `|`).
+- A line shows the budget (quantity × frequency, unit cost, line cost, markup, gross profit, client
+  price), the project, where it's from (CE file, tab, row, final or another version, price date)
+  and what was actually paid (matched purchase orders; click a number to search for it).
+- **Cloudflare only.** The tab is hidden whenever the Lark proxy is on its Render backup, when the
+  line item service can't be reached or has no data, and when the service refuses the login.
+  Settings > Connections ("Line items (CE)") says which; the rest of Suppliers carries on.
+- Kept in this tab's memory only, never in browser storage, and dropped when the login ends.
+- Refreshing the data: re-run the CE pipeline and upload `data/d1/load.sql` (see
+  `tech/anthropic-ce/README.md`, "Line items (D1)"). **Refresh** in Suppliers reads them again.
+
 ## Settings
 
 The gear in the top bar. It works logged out. Saved in this browser only.
@@ -302,12 +331,16 @@ typed; rich text with a link inside no longer shows stray commas.
   fast: on a shared computer, use Log out. (The systems standard drops cached data at every session
   end; Suppliers keeps it on purpose, at the team's request.) The records on screen are dropped from
   memory the moment a login ends.
+- **CE line items** (the Line Items tab) hold internal costs and markups. They are only sent to
+  people the line item service lets in (those who can open the procurement table), go over
+  `Authorization` only, stay in memory, and are never saved in the browser.
 - The Lark proxy still has a public `/token` endpoint that hands out app tokens
   (`npm run check:proxy` fails on it). Suppliers doesn't use it; it should be removed.
 
 ## Known limits
 
 - A search returns at most 500 matches per tab; Browse all has no limit.
+- Line Items are read in full on every visit too (about 7 requests of 2,000 lines).
 - The whole table is read on every visit (about 7 pages per 3,500 records). Past about
   100,000 records it stops and says so.
 - Lark's own permissions apply: someone who can't open the Base gets "Lark says your account
@@ -368,11 +401,12 @@ typed; rich text with a link inside no longer shows stray commas.
 | `js/tables.js`, `js/schema.js`, `js/rows.js` | reading the table, its columns, records to rows |
 | `js/cache.js` | the saved copy of the records |
 | `js/query.js`, `js/search.js`, `js/vendor/orama.js` | the search language and list rules, ranking, Orama 3.1.18 |
+| `js/lines.js` | the Line Items tab: CE line rows and their search (pure, tested) |
 | `js/searchbar.js`, `js/filters.js`, `js/results.js`, `js/detail.js`, `js/carousel.js`, `js/present.js`, `js/settings-view.js` | the views |
 | `img/suppliers-icon.svg` + `-32/-180/-512.png` | the app icon |
 | `manifest.webmanifest` | home-screen install |
 | `tools/serve.py` | the dev server (the design language's, port 9125) |
 | `tools/check-shell.mjs`, `tools/check-proxy.mjs` | `npm run check:shell`, `npm run check:proxy` |
-| `tests/` | the offline tests, the live check, the made-up sample and the preview shim |
+| `tests/` | the offline tests, the live check, the made-up samples (`fixture.json`; `lines-fixture.json` from `node tests/make-lines-fixture.mjs`) and the preview shim |
 | `.claude/launch.json`, `.claude/skills/` | Claude Code's preview, and copies of both design skills |
 | `CHANGELOG.md` | every release, newest first |

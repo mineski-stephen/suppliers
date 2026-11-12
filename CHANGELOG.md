@@ -9,6 +9,43 @@ or links stop working), add an entry here with the same number and the date,
 and say what changed in the team's words. `npm run check:shell` fails if the
 two numbers differ.
 
+## 1.4.1 · Nov 12, 2026
+
+- The CE line items now load at the same time as the procurement records instead of after
+  them, so the Line Items tab is ready sooner.
+
+## 1.4.0 · Nov 12, 2026
+
+- **Filters and sorting for Line Items.** On the Line Items tab, the funnel button opens
+  filters made for CE lines: only lines in the final CE (or only other versions), the
+  project outcome (won, lost…), the category, and whether a purchase order was matched.
+  Sort by price date, unit cost, line cost, markup or project code, and group by
+  project, category or business unit, each group with its total line cost. The count
+  beside the tab and the "Not shown" note follow the filters, and a shared link keeps them.
+- The purchase-order filters are unchanged and stay separate: switching tabs switches
+  the panel.
+
+## 1.3.1 · Nov 12, 2026
+
+- While the CE line items load, a spinner shows with the count ("Reading CE line items
+  (4,000 of 12,155)…") on the status line and in the Line Items tab, and the refresh button
+  spins until they're in.
+
+## 1.3.0 · Nov 12, 2026
+
+- **Line Items tab.** Beside Projects, a new tab searches the lines of past cost
+  estimates (CEs) with the same search box and rules. Its count shows as you type;
+  click it to see CE lines instead of purchase orders. Each line shows what it
+  budgeted (quantity, unit cost, line cost, markup, client price), which project,
+  CE and tab it comes from, whether it's in the final CE, and what was actually
+  paid. Click a purchase order number in a line to search for it.
+- The line items come from the CE line item service on Cloudflare, as you, and only
+  for people who can open the procurement table. They stay in this tab's memory and
+  are never saved in the browser. The tab doesn't show while Suppliers is on the
+  backup connection service (Render), or when the line item service can't be
+  reached; everything else works as before. Settings > Connections says which.
+- Filters and sorting stay for purchase orders; they don't apply to Line Items.
+
 ## 1.2.0 · Nov 6, 2026
 
 - **A backup connection service.** The Lark connection service now runs in two

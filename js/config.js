@@ -7,12 +7,13 @@
  * For local testing you can point the page at another connection service, per tab:
  *   http://127.0.0.1:9125/?lark=http://127.0.0.1:8001     (?reset clears it)
  * or under Settings > Advanced. Both work only on a local page and show a red badge.
+ *   http://127.0.0.1:9125/?ce=http://127.0.0.1:8002       the line-item service (Line Items tab)
  * Preview mode (?preview, local page only) runs on tests/fixture.json, a made-up sample.
  */
 
 /* version: bump it with every release and add an entry to CHANGELOG.md (newest first, same number).
    The top bar shows it beside the name. */
-export const APP = { name: "Suppliers", key: "suppliers", version: "1.2.0", env: "live" };   // env: "live" | "test"
+export const APP = { name: "Suppliers", key: "suppliers", version: "1.4.1", env: "live" };   // env: "live" | "test"
 export const ENV_LABEL = APP.env === "test" ? "Test copy" : "";   // display only, never a gate
 
 export const SERVICES = {   // hosted defaults; `min` and `headers` are checked on every wake
@@ -21,6 +22,11 @@ export const SERVICES = {   // hosted defaults; `min` and `headers` are checked 
   // (never sleeps), then Render (the backup). Both must be in index.html's connect-src.
   lark: { urls: ["https://lark-proxy.stephen-lin.workers.dev", "https://lark-proxy-dwiw.onrender.com"],
           service: "lark-cors-proxy", min: "2.0.0", headers: ["Authorization"] },
+  // The Line Items tab: CE line items from anthropic-ce (tech/anthropic-ce, GET /lines, Cloudflare D1).
+  // Cloudflare only, on purpose: there is no Render copy of this, and the tab is hidden whenever the
+  // Lark proxy above is on its Render backup. Must be in index.html's connect-src.
+  ce: { urls: ["https://anthropic-ce.stephen-lin.workers.dev"],
+        service: "anthropic-ce", min: "1.2.0", headers: ["Authorization"] },
 };
 
 // The same Lark app as Fetch and Polaris; the Lark proxy holds its secret. Every address
@@ -50,7 +56,8 @@ export const RULES = {
   // Results with about the same relevance are ordered by status, in this order.
   statusPriority: ["Approved", "Under Review", "Rejected", "Recalled"],
   searchLimit: 500,            // the most matches one search returns per tab
-  recentCount: 20,             // cards in "Recent orders" (then a card that opens Browse all)
+  recentCount: 20,
+  linesPage: 2000,             // CE line items read per request (the service's most)             // cards in "Recent orders" (then a card that opens Browse all)
   chunk: 100,                  // results drawn at a time ("Show more")
   staleAfterMs: 30 * 60000,    // coming back to the tab after this long refreshes quietly
 };

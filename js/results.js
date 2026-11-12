@@ -1,7 +1,8 @@
 /*
  * The results: the tab counts, the list (or the groups, with their totals), "Show more",
  * and what the filters leave out. A card opens its record (#/r/<record id>); clicking the
- * open one again closes it.
+ * open one again closes it. The Line Items tab lists CE line items instead (S.lineResults),
+ * with its own filters, sort and groups (S.lineFilters, js/lines.js).
  *
  * ctx: { S, prefs() -> { rate, show }, open(id), close(), resetFilters() }.
  */
@@ -9,7 +10,8 @@ import { $, $$, h, fmt } from "./ui.js";
 import { RULES } from "./config.js";
 import { dayLabel } from "./rows.js";
 import { applyFilters, groupResults, priceText, TABS, hiddenBy } from "./query.js";
-import { statusBadge, marked, itemNodes, pricesOf, supplierOf } from "./present.js";
+import { statusBadge, marked, itemNodes, pricesOf, supplierOf, lineBadge, lineQty } from "./present.js";
+import { applyLineFilters, lineHiddenBy, groupLines } from "./lines.js";
 
 export function createResults(ctx) {
   const { S } = ctx;
@@ -44,10 +46,36 @@ export function createResults(ctx) {
         date ? h("span", { class: "result-date" }, date) : null) : null);
   }
 
+  /** One CE line item: project code and CE tab, final or not; the particular; the project with the
+   *  budgeted cost on the right; the category and the price date. */
+  function lineCard(r, terms, i = 0) {
+    const row = r.item, id = row.$id;
+    const { show, rate } = ctx.prefs();
+    const unit = priceText(row.unit_price_php, "PHP", show, rate);
+    const total = priceText(row.base_price_php, "PHP", show, rate);
+    const qty = lineQty(row);
+    const date = dayLabel(row.price_date);
+    return h("a", { class: `card result result-line${animate ? " is-entering" : ""}`, href: `#/r/${encodeURIComponent(id)}`, dataset: { id },
+                    style: animate ? `--i:${Math.min(i, 15)}` : null, "aria-current": S.open === id ? "true" : null },
+      h("div", { class: "result-head" },
+        h("span", { class: "result-no" }, marked([row.project_code, row.source_tab].filter(Boolean).join(" · ") || "CE line", terms)),
+        lineBadge(row)),
+      h("h3", { class: "result-title" }, marked(row.particular || row.item || "No particular", terms)),
+      h("div", { class: "result-meta" },
+        h("span", { class: "result-supplier" }, marked(row.project_name || row.client || "No project name", terms)),
+        unit || total ? h("div", { class: "result-pricing" },
+          unit ? h("span", { class: "result-unit" }, `${qty} × ${unit}`) : null,
+          total ? h("b", { class: "result-total" }, `Cost ${total}`) : null) : null),
+      h("div", { class: "result-foot" },
+        row.category ? h("span", { class: "result-project" }, row.category) : null,
+        row.actual_php ? h("span", { class: "result-date" }, `Paid ${priceText(row.actual_php, "PHP", show, rate)}`) : null,
+        date ? h("span", { class: "result-date" }, date) : null));
+  }
+
   function drawMore() {
     const terms = S.terms;
     const next = current.slice(drawn, drawn + RULES.chunk);
-    listEl.append(...next.map((r, i) => card(r, terms, i)));
+    listEl.append(...next.map((r, i) => (r.item.$line ? lineCard(r, terms, i) : card(r, terms, i))));
     animate = false;
     drawn += next.length;
     const left = current.length - drawn;
@@ -67,7 +95,7 @@ export function createResults(ctx) {
       box);
     // Opening a group draws its cards and lets them rise in (each time it opens, as before).
     const fill = (rise) => {
-      if (!box.childElementCount) { animate = rise; box.append(...g.items.map((r, i) => card(r, terms, i))); animate = false; return; }
+      if (!box.childElementCount) { animate = rise; box.append(...g.items.map((r, i) => (r.item.$line ? lineCard(r, terms, i) : card(r, terms, i)))); animate = false; return; }
       if (!rise) return;
       [...box.children].forEach((c, i) => { c.classList.remove("is-entering"); void c.offsetWidth; c.style.setProperty("--i", Math.min(i, 15)); c.classList.add("is-entering"); });
     };
@@ -86,13 +114,15 @@ export function createResults(ctx) {
     $("#results").hidden = !has;
     for (const t of $$(".qtab")) {
       const i = TABS.indexOf(t.dataset.tab);
-      const n = has ? applyFilters(S.results[i], S.filters, ctx.prefs().rate).length : 0;
+      const n = !has ? 0 : t.dataset.tab === "lines" ? (S.lineResults ? applyLineFilters(S.lineResults, S.lineFilters).length : 0)
+        : applyFilters(S.results[i], S.filters, ctx.prefs().rate).length;
       t.querySelector(".count").textContent = n ? n.toLocaleString() : "";
       t.setAttribute("aria-selected", String(t.dataset.tab === S.tab));
       t.tabIndex = t.dataset.tab === S.tab ? 0 : -1;
     }
     if (!has) { listEl.replaceChildren(); return; }
     if (newResults) opened.clear();
+    if (S.tab === "lines") return renderLines({ keepScroll });
     const raw = S.results[TABS.indexOf(S.tab)] || [];
     const { rate } = ctx.prefs();
     current = applyFilters(raw, S.filters, rate);
@@ -129,6 +159,60 @@ export function createResults(ctx) {
       n && parts.length ? h("span", null, `Not shown: ${parts.join(" · ")}. `) : null,
       n && parts.length ? h("button", { type: "button", class: "linkish", onclick: () => ctx.resetFilters() }, "Reset filters") : null,
       capped ? h("span", { class: "capped" }, `${parts.length && n ? " " : ""}Showing the best ${RULES.searchLimit.toLocaleString()} matches. Add a word or a filter to narrow it down.`) : null,
+    ].filter(Boolean));
+    noteEl.hidden = !noteEl.childElementCount;
+    if (!keepScroll) window.scrollTo(0, 0); else window.scrollTo(0, scroll);
+  }
+
+  /** The Line Items tab: CE line items, best first. No filters or groups (they're for purchase orders). */
+  function renderLines({ keepScroll = false } = {}) {
+    const scroll = keepScroll ? scrollY : 0;
+    listEl.replaceChildren();
+    drawn = 0;
+    moreBtn.hidden = true;
+    noteEl.replaceChildren();
+    noteEl.hidden = true;
+    if (!S.lineResults) {
+      const info = ctx.lines();
+      current = [];
+      countEl.textContent = "";
+      const p = info.progress;
+      listEl.append(h("div", { class: "empty small" }, info.state === "loading"
+        ? h("div", { class: "loader-title lines-loading", role: "status" }, h("span", { class: "spinner", "aria-hidden": "true" }),
+            `Reading the CE line items${p && p.total ? ` (${p.n.toLocaleString()} of ${p.total.toLocaleString()})` : ""}…`)
+        : h("p", null, info.note || "CE line items aren't available right now.")));
+      return;
+    }
+    const f = S.lineFilters;
+    const raw = S.lineResults;
+    current = applyLineFilters(raw, f);
+    const n = current.length;
+    if (!n) {
+      const what = S.browse ? "No CE line items" : `No CE line items match “${S.queryText}”`;
+      listEl.append(h("div", { class: "empty small" },
+        h("p", null, raw.length ? `${what} with these filters.` : `${what}.`),
+        raw.length ? h("button", { type: "button", class: "btn btn-sm", onclick: () => ctx.resetLineFilters() }, "Reset filters")
+                   : h("p", null, "Try fewer words, or switch Exact off.")));
+      countEl.textContent = "";
+    } else if (f.group) {
+      const groups = groupLines(current, f.group, f.sort);
+      countEl.textContent = `${fmt.plural(n, "CE line item")} in ${fmt.plural(groups.length, "group")}`;
+      listEl.append(...groups.map((g) => groupEl(g, S.terms)));
+    } else {
+      countEl.textContent = S.browse ? `All CE line items · ${fmt.plural(n, "line")}` : fmt.plural(n, "CE line item");
+      drawMore();
+    }
+    // Say what the filters leave out, and why.
+    const hid = lineHiddenBy(raw, f);
+    const parts = [hid.final ? `${hid.final.toLocaleString()} ${f.final === "only" ? "only in other versions" : "in the final CE"}` : "",
+                   hid.outcome ? `${hid.outcome.toLocaleString()} with another outcome` : "",
+                   hid.category ? `${hid.category.toLocaleString()} in another category` : "",
+                   hid.po ? `${hid.po.toLocaleString()} ${f.po === "yes" ? "without" : "with"} a purchase order` : ""].filter(Boolean);
+    const capped = !S.browse && raw.length >= RULES.searchLimit;
+    noteEl.replaceChildren(...[
+      n && parts.length ? h("span", null, `Not shown: ${parts.join(" · ")}. `) : null,
+      n && parts.length ? h("button", { type: "button", class: "linkish", onclick: () => ctx.resetLineFilters() }, "Reset filters") : null,
+      capped ? h("span", { class: "capped" }, `${parts.length && n ? " " : ""}Showing the best ${RULES.searchLimit.toLocaleString()} matches. Add a word to narrow it down.`) : null,
     ].filter(Boolean));
     noteEl.hidden = !noteEl.childElementCount;
     if (!keepScroll) window.scrollTo(0, 0); else window.scrollTo(0, scroll);

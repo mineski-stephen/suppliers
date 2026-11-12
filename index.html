@@ -11,7 +11,7 @@
   <!-- Where this page may send data: itself and the hosted connection service (a local address
        too, for testing on this computer). A login token can't go anywhere else. Search runs in
        the page (js/vendor/orama.js), so no script comes from a CDN. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self' https://lark-proxy.stephen-lin.workers.dev https://lark-proxy-dwiw.onrender.com http://127.0.0.1:*; object-src 'none'; base-uri 'self'; form-action 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self' https://lark-proxy.stephen-lin.workers.dev https://lark-proxy-dwiw.onrender.com https://anthropic-ce.stephen-lin.workers.dev http://127.0.0.1:*; object-src 'none'; base-uri 'self'; form-action 'self'">
   <title>Suppliers · Mineski</title>
   <meta name="description" content="Suppliers finds past procurement requests, suppliers and prices in Mineski's Lark Base.">
   <meta name="theme-color" content="#F7F3F5" media="(prefers-color-scheme: light)">
@@ -32,7 +32,7 @@
     (function () {
       var v = window.APP_BUILD = Date.now().toString(36);
       var files = ["js/config.js", "js/errors.js", "js/icons.js", "js/ui.js", "js/tables.js", "js/settings.js", "js/net.js",
-                   "js/session.js", "js/auth.js", "js/schema.js", "js/rows.js", "js/cache.js", "js/query.js", "js/vendor/orama.js", "js/search.js",
+                   "js/session.js", "js/auth.js", "js/schema.js", "js/rows.js", "js/cache.js", "js/query.js", "js/vendor/orama.js", "js/search.js", "js/lines.js",
                    "js/present.js", "js/searchbar.js", "js/filters.js", "js/results.js", "js/detail.js", "js/carousel.js",
                    "js/settings-view.js", "js/app.js"];
       var map = { imports: {} };
@@ -128,6 +128,7 @@
                 <button type="button" class="tab qtab" role="tab" data-tab="particulars" aria-selected="false" aria-controls="results" tabindex="-1">Particulars <span class="count"></span></button>
                 <button type="button" class="tab qtab" role="tab" data-tab="suppliers" aria-selected="false" aria-controls="results" tabindex="-1">Suppliers <span class="count"></span></button>
                 <button type="button" class="tab qtab" role="tab" data-tab="projects" aria-selected="false" aria-controls="results" tabindex="-1">Projects <span class="count"></span></button>
+                <button type="button" class="tab qtab qtab-lines" role="tab" data-tab="lines" aria-selected="false" aria-controls="results" tabindex="-1" title="Lines from past cost estimates (CEs)" hidden>Line Items <span class="count"></span></button>
               </div>
               <div class="qbar-tools">
                 <button type="button" class="icon-btn filter-btn" id="filterBtn" aria-haspopup="dialog" aria-expanded="false" aria-controls="filterPop" aria-label="Filter and sort" title="Filter and sort">
@@ -282,6 +283,8 @@
           <h3 class="subhead">Tabs, filters and sort</h3>
           <dl class="help-rows">
             <div><dt>Tabs</dt><dd>Search only the items (Particulars), the suppliers, or the projects. The counts follow the filters.</dd></div>
+            <div><dt>Line Items</dt><dd>The same search over the lines of past cost estimates (CEs): what each line budgeted, its markup and client price, which CE and tab it's from, and what was actually paid. Click a purchase order number in a line to search for it. The tab shows when the line item service is available.</dd></div>
+            <div><dt>Line Items filters</dt><dd>On the Line Items tab, the funnel button has its own filters: final CE only (or other versions only), project outcome, category, and with or without a matched purchase order; sort by price date, unit cost, line cost, markup or project code; group by project, category or business unit, with a total per group.</dd></div>
             <div><dt>Filter and sort</dt><dd>The funnel button: sort by date, price, unit price or project code; filter by status, outsourcing and currency; group by business unit, project or supplier, with a total per group.</dd></div>
             <div><dt>Status</dt><dd>Only Approved records are shown until you pick more.</dd></div>
             <div><dt>Browse all</dt><dd>Every record, newest first, with the same filters, sort and groups.</dd></div>

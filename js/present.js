@@ -4,6 +4,8 @@
  */
 import { h } from "./ui.js";
 import { markRuns, outsourceParts, priceText, currencyOf } from "./query.js";
+import { lineQty } from "./lines.js";
+export { lineQty };
 
 /** Lark's status -> the family's badge colours (tokens-and-color.md, status mapping). */
 const STATUS_TONE = { "approved": "badge-ok", "under review": "badge-info", "rejected": "badge-err", "recalled": "badge-muted" };
@@ -29,6 +31,11 @@ export function pricesOf(row, show, rate) {
     total: priceText(row["Particulars_Price"], cur, show, rate),
   };
 }
+
+/** A CE line item's badge: in the project's final CE, or only in another version. */
+export const lineBadge = (row) => (row.in_final
+  ? h("span", { class: "badge badge-ok", title: "This line is in the project's final CE" }, "Final CE")
+  : h("span", { class: "badge badge-muted", title: `Only in other versions of the CE${row.version_role ? ` (${row.version_role})` : ""}` }, "Other version"));
 
 /** The supplier's name as people know it (the account name when the name is blank). */
 export const supplierOf = (row) => row["Supplier Details_Supplier Name"] || row["Supplier Details_Account Name"] || "";

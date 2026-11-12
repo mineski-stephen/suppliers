@@ -38,7 +38,7 @@ const table = configTable();
 
 let current;
 const listeners = new Set();
-/** The configuration in force: { larkUrls, table, overrides: ["…"] }. larkUrls are tried in order;
+/** The configuration in force: { larkUrls, ceUrls, table, overrides: ["…"] }. larkUrls are tried in order;
  *  an override replaces the whole list with one address. */
 export const cfg = () => current;
 /** Subscribe to saved-settings changes. Returns the unsubscribe function. */
@@ -46,7 +46,7 @@ export const on = (fn) => { listeners.add(fn); return () => listeners.delete(fn)
 
 export function rebuild() {
   const s = localPage ? read() : {};
-  const c = { larkUrls: [...SERVICES.lark.urls], table, overrides: [] };
+  const c = { larkUrls: [...SERVICES.lark.urls], ceUrls: [...SERVICES.ce.urls], table, overrides: [] };
   if (s.larkUrl && isServiceUrl(s.larkUrl)) { c.larkUrls = [s.larkUrl]; c.overrides.push("Connection service address (Settings)"); }
   if (localPage) {   // testing override, per tab
     const q = new URLSearchParams(location.search);
@@ -54,9 +54,14 @@ export function rebuild() {
     if (q.get("lark") && isServiceUrl(q.get("lark"))) store("session", "suppliers.override.lark", q.get("lark"));
     const v = recall("session", "suppliers.override.lark");
     if (v && isServiceUrl(v)) { c.larkUrls = [v]; c.overrides.push("Connection service address (page link)"); }
+    if (q.has("reset")) store("session", "suppliers.override.ce", undefined);
+    if (q.get("ce") && isServiceUrl(q.get("ce"))) store("session", "suppliers.override.ce", q.get("ce"));
+    const ce = recall("session", "suppliers.override.ce");
+    if (ce && isServiceUrl(ce)) { c.ceUrls = [ce]; c.overrides.push("Line item service address (page link)"); }
   }
   if (APP.env !== "live") c.overrides.push(`Environment: ${APP.env}`);
   c.larkUrls = c.larkUrls.map((u) => String(u || "").replace(/\/+$/, "")).filter(Boolean);
+  c.ceUrls = c.ceUrls.map((u) => String(u || "").replace(/\/+$/, "")).filter(Boolean);
   current = c;
 }
 

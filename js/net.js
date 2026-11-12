@@ -176,6 +176,10 @@ export function createService({ id, label, urls, def, freshMs }) {
 
 export const larkService = createService({ id: "lark", label: "Connection service", def: SERVICES.lark, freshMs: 60000,
   urls: () => cfg().larkUrls });
+// The Line Items tab's service (anthropic-ce on Cloudflare). Not in `services`: it is optional, so a
+// problem with it never stops the page or shows the "blocked" note; the tab just stays hidden.
+export const ceService = createService({ id: "ce", label: "Line item service", def: SERVICES.ce, freshMs: 60000,
+  urls: () => cfg().ceUrls });
 export const services = [larkService];
 
 /** Subscribe to every service's status changes. */
@@ -192,6 +196,19 @@ export const describe = (err, extra = {}) => describeError(err,
 export const unreachable = () => new LarkError("connection service unreachable", { network: true });
 
 export const viaProxy = (url) => `${larkService.url()}/proxy?url=${encodeURIComponent(url)}`;
+
+// ---- the line-item service -----------------------------------------------------------------
+/** GET a path of the line-item service with the person's Lark token. Resolves with the JSON body;
+ *  throws LarkError { status, code, userMessage } with the service's own sentence when it refuses. */
+export async function ceGet(path, token, { timeout = READ_TIMEOUT_MS } = {}) {
+  const res = await send(ceService, `${ceService.url()}${path}`, { method: "GET", cache: "no-store",
+    headers: token ? { Authorization: `Bearer ${token}` } : {} }, timeout);
+  const json = await res.json().catch(() => null);
+  if (res.ok && json && !json.error) return json;
+  const e = (json && json.error) || {};
+  throw new LarkError(`line items: HTTP ${res.status}${e.code ? ` ${e.code}` : ""}`,
+    { status: res.status, code: e.code || "", userMessage: e.message || `The line item service answered HTTP ${res.status}.` });
+}
 
 // ---- Lark calls ---------------------------------------------------------------------------
 let onDeadToken = null;

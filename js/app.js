@@ -10,18 +10,25 @@
  * The records come from the Lark Base every time the page loads, read as the signed-in
  * person, and stay in this tab's memory only (they include suppliers' bank details): never
  * in browser storage, and dropped the moment the login ends.
+ *
+ * The Line Items tab (CE line items from anthropic-ce, js/lines.js) is read alongside the records (it starts
+ * as soon as the Lark proxy answers, so it knows whether that's the Render backup), also
+ * as the signed-in person, and kept the same way (memory only: they hold internal costs and markups).
+ * It is Cloudflare only: hidden whenever the Lark proxy is on its Render backup, when the line item
+ * service can't be reached, or when the person isn't allowed to read it.
  */
 import { APP, ENV_LABEL, LARK, RULES } from "./config.js";
 import { $, $$, h, ic, fillIcons, toast, fmt, store, recall, sleep, closeMenu } from "./ui.js";
 import * as settings from "./settings.js";
 import { cfg } from "./settings.js";
-import { larkService, onAnyService, blockedHosts, describe, lark, unreachable } from "./net.js";
+import { larkService, ceService, ceGet, onAnyService, blockedHosts, describe, lark, unreachable } from "./net.js";
 import { isDeadToken, LarkError } from "./errors.js";
 import * as auth from "./auth.js";
 import { loadFields, loadRecords } from "./tables.js";
 import { checkSchema } from "./schema.js";
 import { toRows, sortTime } from "./rows.js";
 import { createIndex } from "./search.js";
+import { createLineIndex, toLineRows, isLineId, defaultLineFilters, encodeLineFilters, decodeLineFilters, lineChoices } from "./lines.js";
 import { cacheKey, pack, unpack, ownerOf } from "./cache.js";
 import { TABS, detectExactPattern, highlightTerms, encodeState, decodeState, statsOf, recent } from "./query.js";
 import { createSearchBar } from "./searchbar.js";
@@ -52,6 +59,10 @@ const S = {
   terms: [], queryText: "",
   open: null,               // the record open in the detail panel
   user: null, loginNote: "", returnTo: "",
+  // The Line Items tab: CE line items (js/lines.js). linesState: off | loading | ok | error | denied.
+  lines: null, lineById: new Map(), lineIndex: null, lineResults: null,
+  linesState: "off", linesNote: "", linesAt: 0, linesSettled: false, linesProgress: null,
+  lineFilters: defaultLineFilters(),   // the Line Items tab's own filters, sort and groups (js/lines.js)
 };
 const prefs = () => ({ rate: settings.exchangeRate(), show: settings.showPrices() });
 
@@ -91,6 +102,13 @@ const ctx = {
   logout: () => { dropCache(); auth.logout(); location.hash = "#/"; },
   clearLocal: () => clearLocal(),
   pricesChanged: () => pricesChanged(),
+  lines: () => ({ state: S.linesState, note: S.linesNote, count: S.lines ? S.lines.length : 0, at: S.linesAt, progress: S.linesProgress,
+    visible: linesVisible(), backup: !!larkService.status.backup }),
+  reloadLines: () => loadLines({ force: true }),
+  searchFor: (text) => searchFor(text),
+  setLineFilters: (patch) => setLineFilters(patch),
+  resetLineFilters: () => setLineFilters(defaultLineFilters()),
+  lineChoices: (col, blank) => lineChoices(S.lines, col, blank),
 };
 const bar = createSearchBar(ctx);
 const filters = createFilters(ctx);
@@ -113,8 +131,9 @@ function onRoute() {
   if (r.view === "settings") S.view = "settings";
   else if (!auth.currentToken()) { S.view = "login"; S.returnTo = location.hash || "#/"; }
   else { S.view = "search"; S.open = r.open; }
-  if (S.view === "search" && S.open && S.rows && !S.byId.has(S.open)) {
-    toast("That record isn't in the procurement table, or your account can't see it.", { type: "info" });
+  if (S.view === "search" && S.open && S.rows && !knownRecord(S.open)) {
+    toast(isLineId(S.open) ? "That CE line item isn't available here, or your account can't see it."
+      : "That record isn't in the procurement table, or your account can't see it.", { type: "info" });
     S.open = null;
     history.replaceState(null, "", `${location.pathname}${location.search}#/`);
   }
@@ -123,6 +142,13 @@ function onRoute() {
   if (auth.currentToken() && !S.rows && !S.loading && !S.loadError) load();
   if (S.view === "settings") window.scrollTo(0, 0);
 }
+
+/** Is this id a record or line item we have, or one still coming (line items are read after the records)? */
+function knownRecord(id) {
+  if (!isLineId(id)) return S.byId.has(id);
+  return S.lineById.has(id) || !S.linesSettled;
+}
+const recordOf = (id) => (id ? S.byId.get(id) || S.lineById.get(id) || null : null);
 
 /** A record opened or closed: on a narrow screen the sheet takes the keyboard; closing gives it back to the card. */
 function afterOpenChange(was) {
@@ -150,7 +176,8 @@ function closeRecord() {
 
 /* ======================= rendering ======================= */
 function pageTitle() {
-  if (S.view === "search" && S.open && S.byId.has(S.open)) return `${S.byId.get(S.open)["Particulars_Item"] || "Record"} · ${APP.name}`;
+  const row = S.view === "search" ? recordOf(S.open) : null;
+  if (row) return `${(row.$line ? row.particular : row["Particulars_Item"]) || "Record"} · ${APP.name}`;
   return `${{ login: "Log in", busy: "Logging in", settings: "Settings", search: "Search" }[S.view]} · ${APP.name}`;
 }
 
@@ -215,8 +242,9 @@ function renderSearch() {
   $("#schemaNoteText").textContent = notes.join(" ");
   $("#openLark").href = cfg().table.url || "#/";
   $("#refreshBtn").disabled = !auth.currentToken() || (S.loading && !S.quiet);
-  $("#refreshBtn").classList.toggle("is-busy", S.loading);
+  $("#refreshBtn").classList.toggle("is-busy", S.loading || S.linesState === "loading");
   paintExact();
+  paintLinesTab();
   filters.paint();
   bar.setReady(!!S.index);
   detail.render();
@@ -254,6 +282,11 @@ function paintStatus() {
       h("button", { type: "button", class: "linkish", onclick: () => apply(S.fresh, { keepScroll: true }) }, "Show them"));
   } else if (!S.fromCache) parts.push(h("span", null, `· Updated ${fmt.time(S.loadedAt)}`));
   if (S.countNote) parts.push(h("span", { class: "status-warn" }, `· ${S.countNote}`));
+  if (S.linesState === "loading") {
+    const p = S.linesProgress;
+    if (!S.loading) parts.push(h("span", { class: "spinner", "aria-hidden": "true" }));   // (the records' own spinner is already there)
+    parts.push(h("span", null, `${S.loading ? "· " : ""}Reading CE line items${p && p.total ? ` (${p.n.toLocaleString()} of ${p.total.toLocaleString()})` : ""}…`));
+  } else if (linesVisible()) parts.push(h("span", null, `· ${fmt.plural(S.lines.length, "CE line item")}`));
   el.replaceChildren(...parts);
 }
 
@@ -320,7 +353,9 @@ auth.onBeforeLogin(() => store("session", KEY.view, location.search));
 function forgetRecords() {
   S.gen++;
   Object.assign(S, { rows: null, byId: new Map(), index: null, stats: null, schema: null, results: null, fresh: null, fromCache: false,
-                     open: null, loadError: null, loadedAt: 0, countNote: "", user: null });
+                     open: null, loadError: null, loadedAt: 0, countNote: "", user: null,
+                     lines: null, lineById: new Map(), lineIndex: null, lineResults: null,
+                     linesState: "off", linesNote: "", linesAt: 0, linesSettled: false, linesProgress: null });
   carousel.render([]);
   results.render();
   detail.render({ instant: true });   // the panel's text goes too (it may show a supplier's bank details)
@@ -391,6 +426,9 @@ async function load({ quiet = false, manual = false } = {}) {
       const awake = larkService.wake();
       if ((await Promise.race([awake, sleep(1200).then(() => "slow")])) === "slow" && !S.quiet) { S.waking = true; paintLoad(); }
       if (!(await awake)) throw unreachable();
+      // Connected, so we know whether the Lark proxy is Cloudflare or the Render backup: the Line Items
+      // tab's line items start now, side by side with the records (they come from another service).
+      if (gen === S.gen && (!S.lines || manual)) loadLines({ force: manual });
       S.waking = false;
       S.stage = "fields"; paintLoad();
       const schema = checkSchema(await loadFields(call, t));
@@ -431,13 +469,95 @@ function apply(fresh, { keepScroll = false } = {}) {
   S.stats = statsOf(fresh.rows);
   carousel.render(recent(fresh.rows));
   bar.setReady(true);
-  if (S.open && !S.byId.has(S.open)) {
+  if (S.open && !knownRecord(S.open)) {   // a line item link waits for the line items
     toast("The record you had open isn't in the table any more.", { type: "info" });
     closeRecord();
   }
   if (bar.fullQuery() || S.browse) runSearch({ keepScroll, keepOpen: true });
   render();
   if (first && S.view === "search" && !S.open) bar.focus();
+}
+
+/* ======================= CE line items (the Line Items tab) ======================= */
+/** The tab shows only with line items in hand, and never while the Lark proxy is on Render. */
+const linesVisible = () => !!S.lineIndex && !larkService.status.backup;
+
+/** Read every CE line item from the line item service (anthropic-ce), page by page, as the signed-in
+ *  person, and index them. Quietly: a failure hides the tab and Settings says why; Suppliers itself
+ *  carries on. force: read again even if they're here (Refresh). */
+async function loadLines({ force = false } = {}) {
+  if (S.linesState === "loading" || !auth.currentToken() || (S.lines && !force)) return;
+  if (larkService.status.backup) {
+    Object.assign(S, { linesState: S.lines ? "ok" : "off", linesSettled: true,
+      linesNote: "Hidden while Suppliers is on the backup connection service (Render). Line items are only served from Cloudflare." });
+    paintLinesTab();
+    return;
+  }
+  const gen = S.gen;
+  Object.assign(S, { linesState: "loading", linesNote: "", linesProgress: null });
+  if (S.view === "search") { paintStatus(); paintLinesBusy(); }
+  try {
+    if (!await ceService.wake()) {
+      throw new LarkError("line item service unreachable", { userMessage: ceService.status.state === "outdated"
+        ? `The line item service is out of date (${ceService.status.detail}). Ask the admin to redeploy it.`
+        : "The line item service can't be reached right now." });
+    }
+    const avail = (ceService.status.info || {}).lines || {};
+    if (!avail.available) throw new LarkError("no line items", { userMessage: avail.reason || "The line item service has no line items yet." });
+    const raw = [];
+    let columns = null, after = 0;
+    for (;;) {
+      const t = auth.currentToken();
+      if (!t || gen !== S.gen) return;
+      const page = await ceGet(`/lines?after=${after}&limit=${RULES.linesPage}`, t.access_token);
+      if (gen !== S.gen) return;
+      columns = columns || page.columns || [];
+      raw.push(...(page.rows || []));
+      S.linesProgress = { n: raw.length, total: (page.dataset && page.dataset.rows) || 0 };
+      if (S.view === "search") { paintStatus(); paintLinesBusy(); }
+      if (!page.next) break;
+      after = page.next;
+    }
+    const rows = toLineRows(columns, raw);
+    const index = createLineIndex();
+    await index.build(rows);
+    if (gen !== S.gen) return;
+    Object.assign(S, { lines: rows, lineIndex: index, lineById: new Map(rows.map((r) => [r.$id, r])),
+      linesState: "ok", linesNote: "", linesAt: Date.now(), linesSettled: true, linesProgress: null });
+    if (bar.fullQuery() || S.browse) await runSearch({ keepScroll: true, keepOpen: true });
+  } catch (err) {
+    if (gen !== S.gen) return;
+    Object.assign(S, { linesState: err.status === 403 || err.status === 401 ? "denied" : "error", linesSettled: true, linesProgress: null,
+      linesNote: err.userMessage || describe(err) });
+    if (S.lines) S.linesState = "ok";   // a failed refresh keeps the line items already here
+  } finally {
+    if (gen === S.gen) {
+      if (S.open && isLineId(S.open) && !S.lineById.has(S.open) && S.linesSettled) {
+        toast("That CE line item isn't available here, or your account can't see it.", { type: "info" });
+        closeRecord();
+      }
+      render();
+    }
+  }
+}
+
+/** While line items load: the refresh button spins, and the Line Items tab (if it's showing) counts up. */
+function paintLinesBusy() {
+  $("#refreshBtn").classList.toggle("is-busy", S.loading || S.linesState === "loading");
+  if (S.tab === "lines" && S.results && !S.lineResults) results.render({ keepScroll: true });
+}
+
+/** Show or hide the Line Items tab. On Render (or without line items) it goes, and a search on it moves to All. */
+function paintLinesTab() {
+  const tab = $('.qtab[data-tab="lines"]');
+  const pending = S.tab === "lines" && !S.linesSettled && !larkService.status.backup;   // a shared link, line items still coming
+  const show = linesVisible() || pending;
+  tab.hidden = !show;
+  if (!show && S.tab === "lines") {
+    S.tab = "all";
+    if (S.results) drawList();
+    updateUrl();
+  }
 }
 
 /* ======================= the saved copy (js/cache.js) ======================= */
@@ -486,8 +606,10 @@ async function runSearch({ keepScroll = false, keepOpen = false } = {}) {
   } else {
     lists = await Promise.all(TABS.map((tab) => S.index.search(full, { tab, exact: S.exact })));
   }
+  const lineList = !linesVisible() ? null : full ? await S.lineIndex.search(full, { exact: S.exact }) : S.lineIndex.all();
   if (my !== seq) return;   // a newer search has started
   S.results = lists;
+  S.lineResults = lineList;
   S.queryText = full;
   S.terms = highlightTerms(bar.highlightText());
   if (!keepOpen && S.open) closeRecord();
@@ -495,8 +617,24 @@ async function runSearch({ keepScroll = false, keepOpen = false } = {}) {
   renderSearch();
 }
 
+/** Search the purchase orders for one value (a purchase order number from a CE line item). */
+async function searchFor(text) {
+  // Close the line item first and wait for it: closing goes Back in the history, and the search must
+  // land in the address bar of the page we come back to (not the entry being left).
+  if (S.open) {
+    const back = new Promise((r) => { addEventListener("popstate", r, { once: true }); setTimeout(r, 600); });
+    closeRecord();
+    await back;
+  }
+  bar.setState([], String(text));
+  S.tab = "all";
+  S.browse = false;
+  runSearch();
+  bar.focus();
+}
+
 function clearResults() {
-  S.results = null; S.terms = []; S.queryText = "";
+  S.results = null; S.lineResults = null; S.terms = []; S.queryText = "";
   if (S.open) closeRecord();
   drawList();
   renderSearch();
@@ -509,6 +647,13 @@ function clearSearch() {
 
 function setFilters(patch) {
   Object.assign(S.filters, patch);
+  filters.paint();
+  drawList();
+  updateUrl();
+}
+
+function setLineFilters(patch) {
+  Object.assign(S.lineFilters, patch);
   filters.paint();
   drawList();
   updateUrl();
@@ -533,7 +678,7 @@ function updateUrl() {
     const now = new URLSearchParams(location.search);
     for (const k of ["preview", "lark"]) if (now.has(k)) keep.set(k, now.get(k));
   }
-  const all = [qs, keep.toString()].filter(Boolean).join("&");
+  const all = [qs, encodeLineFilters(S.lineFilters).toString(), keep.toString()].filter(Boolean).join("&");
   const next = `${location.pathname}${all ? `?${all}` : ""}${location.hash}`;
   if (next !== `${location.pathname}${location.search}${location.hash}`) history.replaceState(history.state, "", next);
 }
@@ -545,6 +690,7 @@ function applyUrlState() {
   for (const k of ["sort", "statuses", "outsource", "currency", "group"]) if (k in d) S.filters[k] = d[k];
   if (d.all) S.browse = true;
   if (d.chips) bar.setState(d.chips, d.text);
+  Object.assign(S.lineFilters, decodeLineFilters(location.search));
   if (!("exact" in d) && d.text && detectExactPattern(d.text)) { S.autoExact = true; S.exact = true; }
 }
 
@@ -589,15 +735,17 @@ const tabs = $$(".qtab");
 for (const t of tabs) {
   t.addEventListener("click", () => {
     S.tab = t.dataset.tab;
+    filters.paint();   // the panel shows the purchase-order or the line item filters
     drawList();
     updateUrl();
   });
   t.addEventListener("keydown", (e) => {
-    const i = tabs.indexOf(t);
-    const to = { ArrowRight: i + 1, ArrowLeft: i - 1 + tabs.length, Home: 0, End: tabs.length - 1 }[e.key];
+    const shown = tabs.filter((x) => !x.hidden);
+    const i = shown.indexOf(t);
+    const to = { ArrowRight: i + 1, ArrowLeft: i - 1 + shown.length, Home: 0, End: shown.length - 1 }[e.key];
     if (to === undefined) return;
     e.preventDefault();
-    const next = tabs[to % tabs.length];
+    const next = shown[to % shown.length];
     next.focus();
     next.click();
   });
@@ -625,6 +773,9 @@ document.addEventListener("click", (e) => {
 });
 onAnyService(() => {
   paintBlock();
+  // The Lark proxy moved to (or back from) Render: the Line Items tab follows.
+  if (S.view === "search") { paintLinesTab(); paintStatus(); }
+  if (!larkService.status.backup && S.rows && !S.lines && S.linesState === "off" && S.linesSettled) { S.linesSettled = false; loadLines(); }
   if (S.view === "busy") {
     $("#busyMsg").textContent = larkService.status.state === "waking"
       ? "Logging you in… Waking up the connection service, which can take up to a minute." : "Logging you in…";

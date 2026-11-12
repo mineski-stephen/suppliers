@@ -267,7 +267,8 @@ export const recent = (rows, n = RULES.recentCount) =>
   rows.slice().sort((a, b) => sortTime(b["Submitted at"]) - sortTime(a["Submitted at"])).slice(0, n);
 
 // ---- the address bar (shareable links) -------------------------------------------------------
-export const TABS = ["all", "particulars", "suppliers", "projects"];
+export const TABS = ["all", "particulars", "suppliers", "projects"];   // the purchase-order tabs (one result list each)
+export const ALL_TABS = [...TABS, "lines"];                                  // plus Line Items (CE line items, js/lines.js)
 const STATUS_CANON = Object.fromEntries(RULES.statuses.map((s) => [s.toLowerCase(), s]));
 
 /** The view -> query string, in the old page's format (so old links still open the same view).
@@ -303,7 +304,7 @@ export function decodeState(search) {
   const out = {};
   if (p.has("exact")) out.exact = p.get("exact").toLowerCase() === "true";
   const tab = String(p.get("tab") || "").toLowerCase();
-  if (TABS.includes(tab)) out.tab = tab;
+  if (ALL_TABS.includes(tab)) out.tab = tab;
   const sort = Object.keys(SORTS).find((k) => SORTS[k][1] === String(p.get("sort") || "").toLowerCase());
   if (sort) out.sort = sort;
   if (p.has("status")) {

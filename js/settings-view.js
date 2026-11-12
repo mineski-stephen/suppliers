@@ -7,7 +7,7 @@
 import * as settings from "./settings.js";
 import { cfg, isServiceUrl, localPage } from "./settings.js";
 import * as auth from "./auth.js";
-import { larkService, onAnyService } from "./net.js";
+import { larkService, ceService, onAnyService } from "./net.js";
 import { RULES, ENV_LABEL, SERVICES } from "./config.js";
 import { dayLabel } from "./rows.js";
 import { $, h, ic, initTheme, radioKeys, toast, fmt } from "./ui.js";
@@ -85,12 +85,30 @@ export function createSettingsView(ctx) {
       h("li", null,
         h("span", { class: "status-text" }, h("b", null, "Procurement table"),
           h("span", null, t.error ? t.error : `${t.app} · ${t.table}`)),
-        t.url ? h("a", { class: "btn btn-sm btn-ghost", href: t.url, target: "_blank", rel: "noopener" }, "Open in Lark", ic("external")) : null));
+        t.url ? h("a", { class: "btn btn-sm btn-ghost", href: t.url, target: "_blank", rel: "noopener" }, "Open in Lark", ic("external")) : null),
+      linesItem());
     const notes = d.notes || [];
     $("#schemaBox").hidden = !notes.length;
     $("#schemaList").replaceChildren(...notes.map((n) => h("li", null, n)));
     $("#envNote").hidden = !ENV_LABEL;
     $("#envNote").textContent = ENV_LABEL ? `Suppliers is connected to the ${ENV_LABEL.toLowerCase()} table. To go live, set APP.env in js/config.js.` : "";
+  }
+
+  /** The Line Items tab's source: CE line items from the line item service (anthropic-ce, Cloudflare only). */
+  function linesItem() {
+    const l = ctx.lines();
+    const host = ceService.host();
+    const [tone, text] = !auth.currentToken() ? ["", "Log in to connect"]
+      : l.backup ? ["is-warn", "Hidden while Suppliers is on the backup connection service (Render). Line items are only served from Cloudflare."]
+      : l.state === "ok" ? ["is-ok", `Connected · ${fmt.plural(l.count, "CE line item")}${l.at ? ` · updated ${fmt.time(l.at)}` : ""}`]
+      : l.state === "loading" ? ["is-warn", `Reading the CE line items${l.progress && l.progress.total ? ` (${l.progress.n.toLocaleString()} of ${l.progress.total.toLocaleString()})` : ""}…`]
+      : l.state === "denied" ? ["is-err", l.note || "Your Lark account can't read the CE line items."]
+      : l.state === "error" ? ["is-err", l.note || "Couldn't read the CE line items."]
+      : ["", l.note || "Read with the procurement records."];
+    return h("li", null, h("span", { class: `dot ${tone}`.trim() }),
+      h("span", { class: "status-text" }, h("b", null, "Line items (CE)"), h("span", null, `${text}${host ? ` · ${host}` : ""}`)),
+      auth.currentToken() && !l.backup ? h("button", { type: "button", class: "btn btn-sm", disabled: l.state === "loading",
+        onclick: () => { ctx.reloadLines(); paintConnections(); } }, l.state === "ok" ? "Read again" : "Try again") : null);
   }
 
   function paint() { paintAccount(); paintPrices(); paintConnections(); }

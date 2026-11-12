@@ -28,8 +28,31 @@
     });
   };
 
+  // The line item service (anthropic-ce, the Line Items tab): made-up lines from tests/lines-fixture.json.
+  var lx = null;
+  var linesFixture = function () {
+    return lx || (lx = realFetch("tests/lines-fixture.json?v=" + Date.now()).then(function (r) { return r.json(); }));
+  };
+  var ceAnswer = async function (url) {
+    var lf = await linesFixture();
+    var u = new URL(url);
+    if (u.pathname === "/" || u.pathname === "") {
+      return reply({ service: "anthropic-ce", version: "1.2.0", cors: { allow_headers: ["Content-Type", "Authorization"] },
+        lines: { available: true, built: "2026-11-12T00:00:00Z", rows: lf.rows.length, page_limit: 2000 } }, 120);
+    }
+    if (u.pathname === "/lines") {
+      var after = Number(u.searchParams.get("after") || 0), limit = Math.min(Number(u.searchParams.get("limit") || 1000), 50);
+      var page = lf.rows.slice(after, after + limit);   // rowids are 1-based positions; 50 a page here so the progress shows
+      var more = after + limit < lf.rows.length;
+      return reply({ columns: lf.columns, rows: page, next: more ? after + limit : null,
+        dataset: { built: "2026-11-12T00:00:00Z", rows: lf.rows.length } }, 200);
+    }
+    return reply({ error: { code: "not_found", message: "preview mode: not answered" } }, 50);
+  };
+
   window.fetch = async function (input, init) {
     var url = typeof input === "string" ? input : input.url;
+    if (/anthropic-ce[^/]*\.workers\.dev|127\.0\.0\.1:8002/.test(url)) return ceAnswer(url);
     if (/(onrender\.com|workers\.dev)\/?$/.test(url) || (/:\d+\/$/.test(url) && !/127\.0\.0\.1:9125\/$/.test(url))) {
       return reply({ service: "lark-cors-proxy", version: "2.0.0" }, 120);   // what the real proxy calls itself
     }

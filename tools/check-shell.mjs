@@ -109,10 +109,13 @@ function run() {
     const connect = ((csp.match(/connect-src ([^;]+)/) || [])[1] || "").trim().split(/\s+/);
     const config = readFileSync(join(ROOT, "js", "config.js"), "utf8");
     const proxies = [...(((config.match(/lark:\s*\{\s*urls:\s*\[([^\]]*)\]/) || [])[1] || "").matchAll(/"([^"]+)"/g))].map((m) => m[1]);
+    // The line item service (SERVICES.ce, the Line Items tab) is the one other address allowed.
+    const ceUrls = [...(((config.match(/ce:\s*\{\s*urls:\s*\[([^\]]*)\]/) || [])[1] || "").matchAll(/"([^"]+)"/g))].map((m) => m[1]);
     ok(/default-src 'self'/.test(csp), "CSP default-src is 'self'");
-    ok(proxies.length > 0 && connect.every((s) => s === "'self'" || proxies.includes(s) || s === "http://127.0.0.1:*"),
-       `connect-src lists only 'self', the proxies (${proxies.join(", ") || "none found in config.js"}) and http://127.0.0.1:* (has: ${connect.join(" ")})`);
+    ok(proxies.length > 0 && connect.every((s) => s === "'self'" || proxies.includes(s) || ceUrls.includes(s) || s === "http://127.0.0.1:*"),
+       `connect-src lists only 'self', the proxies (${proxies.join(", ") || "none found in config.js"}), the line item service (${ceUrls.join(", ") || "none"}) and http://127.0.0.1:* (has: ${connect.join(" ")})`);
     ok(proxies.every((p) => connect.includes(p)), "connect-src lists every proxy in SERVICES.lark.urls");
+    ok(ceUrls.every((p) => connect.includes(p)), "connect-src lists the line item service in SERVICES.ce.urls");
     ok(!/cdn\.|jsdelivr|unpkg/.test(csp) && !/<script[^>]+src="https?:/.test(html), "no script from a CDN");
   }
   ok(/<title>Suppliers · Mineski<\/title>/.test(html), "the title is “Suppliers · Mineski”");

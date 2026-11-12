@@ -244,3 +244,8 @@ body.detail-open .detail { width: max(480px, 100% - 844px); margin-left: 24px; o
   .qexact { padding: 5px 9px; }
 }
 .dnote { margin-top: 6px; font-size: 12.5px; }
+
+/* Line Items (CE line items): the purchase order numbers in a line, each a link that searches for it. */
+.po-list { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.po-list .linkish { font-size: 13px; }
+.lines-loading { justify-content: center; font-weight: 600; color: var(--ink-2); }
