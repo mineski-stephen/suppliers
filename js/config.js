@@ -13,7 +13,7 @@
 
 /* version: bump it with every release and add an entry to CHANGELOG.md (newest first, same number).
    The top bar shows it beside the name. */
-export const APP = { name: "Suppliers", key: "suppliers", version: "1.4.1", env: "live" };   // env: "live" | "test"
+export const APP = { name: "Suppliers", key: "suppliers", version: "1.4.2", env: "live" };   // env: "live" | "test"
 export const ENV_LABEL = APP.env === "test" ? "Test copy" : "";   // display only, never a gate
 
 export const SERVICES = {   // hosted defaults; `min` and `headers` are checked on every wake
