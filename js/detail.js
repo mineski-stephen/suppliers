@@ -92,6 +92,15 @@ export function createDetail(ctx) {
     return h("div", { class: "df" }, h("dt", null, labelText), h("dd", null, copyValue(v, strong, what)));
   }
 
+  /** The project's CE in Google Sheets (the Universe's "Internal CE (Sheet)"), else the CE workbook's file name. */
+  function ceSheetField(row) {
+    const link = ctx.ceSheet(row.project_code);
+    if (!link) return lineField("CE workbook", row.source_file);
+    return h("div", { class: "df" }, h("dt", null, "Internal CE (Sheet)"),
+      h("dd", null, h("a", { href: link, target: "_blank", rel: "noopener noreferrer", class: "dlink", title: link },
+        "Open the CE in Google Sheets", ic("external"))));
+  }
+
   /** The groups of a CE line item. */
   function lineGroups(row) {
     const { show, rate } = ctx.prefs();
@@ -117,7 +126,7 @@ export function createDetail(ctx) {
         lineField("Client", row.client), lineField("Outcome", row.outcome), lineField("Business unit", row.business_unit),
         lineField("Entity", row.entity), lineField("Budget tier", row.budget_tier)]],
       ["Where it's from", [
-        lineField("CE workbook", row.source_file), lineField("Tab", row.source_tab), lineField("Row", num(row.source_row)),
+        ceSheetField(row), lineField("Tab", row.source_tab), lineField("Row", num(row.source_row)),
         lineField("In the final CE", row.in_final ? "Yes" : `No${row.version_role ? ` (${row.version_role})` : ""}`),
         lineField(row.n_versions > 1 ? `Also in ${row.n_versions} versions` : "Versions", row.versions),
         lineField("Price date", dayLabel(row.price_date))]],

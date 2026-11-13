@@ -113,3 +113,33 @@ test("line filters survive a shared link", () => {
   assert.equal(encodeLineFilters(defaultLineFilters()).toString(), "", "defaults stay out of the link");
   assert.deepEqual(decodeLineFilters("?lsort=nonsense&lfinal=maybe"), {});
 });
+
+/* ---- the CE in Google Sheets, from the Universe ---- */
+import { ceSheetLinks, projectKey } from "../js/lines.js";
+test("Universe records give each project code its CE link (https only, first one wins)", () => {
+  const items = [
+    { fields: { "Project Code": [{ text: "2025TEG-P0220", type: "text" }], "Internal CE (Sheet)": { link: "https://docs.google.com/spreadsheets/d/A/edit", text: "x" } } },
+    { fields: { "Project Code": [{ text: "2025teg-p0220 ", type: "text" }], "Internal CE (Sheet)": { link: "https://docs.google.com/spreadsheets/d/B/edit" } } },
+    { fields: { "Project Code": [{ text: "P2", type: "text" }], "Internal CE (Sheet)": { link: "javascript:alert(1)" } } },
+    { fields: { "Project Code": [{ text: "P3", type: "text" }] } },
+    { fields: { "Internal CE (Sheet)": { link: "https://docs.google.com/x" } } },
+  ];
+  const m = ceSheetLinks(items);
+  assert.equal(m.size, 1);
+  assert.equal(m.get(projectKey("2025teg-p0220")), "https://docs.google.com/spreadsheets/d/A/edit");
+  assert.equal(m.get("P2"), undefined);
+});
+
+test("a line search returns every match, not just 500", async () => {
+  // About 1,100 lines: the sample ten times over, each with its own key.
+  const many = [];
+  for (let i = 0; i < 10; i++) for (const r of fx.rows) many.push(r.map((v, c) => (fx.columns[c] === "line_key" ? `${v}#${i}` : v)));
+  const big = createLineIndex();
+  await big.build(toLineRows(fx.columns, many));
+  const word = (await big.search("a")).length;
+  const scan = (await big.search("a", { exact: true })).length;
+  const lit = many.length;
+  assert.ok(scan > 500, `Exact found ${scan}`);
+  assert.ok(word > 500, `a word search found ${word}`);
+  assert.ok(scan <= lit && word <= lit);
+});

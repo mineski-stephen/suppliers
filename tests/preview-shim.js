@@ -65,6 +65,13 @@
     if (/\/authen\/v1\/user_info/.test(target)) return reply({ code: 0, data: { name: "Preview Mode" } });
     var t = target.match(/\/tables\/(tbl[A-Za-z0-9]+)\/(fields|records)(\/[a-z_]+)?/);
     if (!t) return reply({ code: 99999, msg: "preview mode: no answer for " + target });
+    if (t[1] === "tblEmWYOXoAF70uf" && t[3] === "/search") {   // the Universe: made-up CE links for the sample lines' projects
+      var lf = await linesFixture(), ci = lf.columns.indexOf("project_code"), seen = {};
+      var items = lf.rows.map(function (r) { return r[ci]; }).filter(function (c) { return c && !seen[c] && (seen[c] = 1); })
+        .map(function (c, i) { return { record_id: "recU" + i, fields: { "Project Code": [{ text: c, type: "text" }],
+          "Internal CE (Sheet)": { link: "https://docs.google.com/spreadsheets/d/PREVIEW-SAMPLE-" + c + "/edit", text: "CE " + c } } }; });
+      return reply({ code: 0, data: { items: items, has_more: false, page_token: "", total: items.length } }, 200);
+    }
     if (t[2] === "fields") return reply({ code: 0, data: { items: f.fields, has_more: false, total: f.fields.length } });
     if (t[3] === "/search") {
       var names = body.field_names;

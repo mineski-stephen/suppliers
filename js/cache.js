@@ -58,3 +58,28 @@ export async function unpack(saved, owner) {
 
 /** Who a saved copy belongs to. */
 export const ownerOf = (user) => (user && (user.email || user.name)) || "";
+
+/* ---- the saved copy of the CE line items (the Line Items tab) ----------------------------------
+ *   localStorage "suppliers.lines" = { v, at, owner, built, n, columns, z }
+ *     z        the service's rows (arrays, in `columns` order), gzipped and base64
+ *     built    when the line item service last rebuilt its lines: while it's the same, the lines
+ *              aren't downloaded again (one small read still checks this person may see them)
+ * They hold internal costs and markups. Dropped like the records' copy (Log out, Clear local data,
+ * someone else's login, a new format), and also when the service refuses this person (403).
+ */
+export const LINES_CACHE_VERSION = 1;
+export const LINES_KEY = "suppliers.lines";
+
+/** The service's columns and rows -> the object to store. */
+export async function packLines(columns, rows, { owner, built = null, at = Date.now() }) {
+  return { v: LINES_CACHE_VERSION, at, owner, built, n: rows.length, columns: [...columns], z: b64(await gzip(JSON.stringify(rows))) };
+}
+
+/** The stored object -> { columns, rows, at, built }, or null when it can't be used. */
+export async function unpackLines(saved, owner) {
+  if (!saved || saved.v !== LINES_CACHE_VERSION || !owner || saved.owner !== owner || typeof saved.z !== "string" || !Array.isArray(saved.columns)) return null;
+  try {
+    const rows = JSON.parse(await gunzip(unb64(saved.z)));
+    return Array.isArray(rows) && rows.length === saved.n ? { columns: saved.columns, rows, at: Number(saved.at) || 0, built: saved.built || null } : null;
+  } catch (_) { return null; }
+}

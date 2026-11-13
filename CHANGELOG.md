@@ -9,6 +9,38 @@ or links stop working), add an entry here with the same number and the date,
 and say what changed in the team's words. `npm run check:shell` fails if the
 two numbers differ.
 
+## 1.5.2 · Nov 13, 2026
+
+- Purchase-order searches now find every match too, not just the first 500. The status filter
+  ("Approved" by default), the other filters, the counts on the tabs and the group totals now
+  cover all of them (before, a broad search could show fewer approved orders than there are).
+  The "Showing the best 500 matches" note is gone; the list still shows 100 at a time.
+
+## 1.5.1 · Nov 13, 2026
+
+- A Line Items search now finds every matching line, not just the first 500. The filters, the
+  count beside the tab and the group totals now cover all of them (before, a broad search could
+  undercount, and "Only lines in the final CE" only looked within those 500). The list still
+  shows 100 at a time.
+
+## 1.5.0 · Nov 13, 2026
+
+- **The Line Items tab is ready at once.** CE line items are now saved in this browser like the
+  purchase orders, so the next visit shows them straight away. Suppliers only downloads them again
+  when the line item service has new ones; otherwise it just checks you may still see them.
+  The saved copy includes costs and markups. It's deleted when you log out, by Clear local data,
+  when someone else logs in here, and as soon as the service says you no longer have access.
+- Line item cards now show the unit cost, the markup and the client price, instead of the
+  quantity and the line cost (those are still in the line's details).
+- **A line's "Where it's from" links to its CE in Google Sheets**: the project's "Internal CE
+  (Sheet)" from the Universe, read as you. If the project has none there, or you can't open
+  the Universe, the CE workbook's file name shows as before. The link is the project's current
+  CE, which may be a later version than the one the line came from (see "Versions").
+
+## 1.4.3 · Nov 13, 2026
+
+- Shared design fixes: the top bar now lines up with the page content on pages long enough to scroll (it sat about 7px to the right).
+
 ## 1.4.2 · Nov 12, 2026
 
 - Shared design fixes from the design language, found while reworking Appraisal:

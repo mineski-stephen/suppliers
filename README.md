@@ -86,8 +86,8 @@ search. Press **/** anywhere on the page to jump to the search box.
 
 Ranking: Orama's BM25 with typo tolerance; records that contain the words literally
 come first; within about the same score, **Approved** comes before **Under Review**,
-**Rejected** and **Recalled**. One search returns at most 500 matches per tab (the
-page says so when it hits that).
+**Rejected** and **Recalled**. A search returns every match (no cap since 1.5.2), so the
+filters, counts and group totals cover them all; the list draws 100 at a time.
 
 **Filter and sort** (the funnel; the number on it counts what isn't default):
 sort by date, total price, unit price or project code; status; outsourced (only, or
@@ -138,13 +138,20 @@ the login against the same procurement table, so whoever can use Suppliers can s
   purchase order; sort by price date, unit cost, line cost, markup or project code; group by
   project, category or business unit with the total line cost. Shareable links keep them
   (`lsort`, `lfinal`, `loutcome`, `lcat`, `lpo`, `lgroup`, values separated by `|`).
-- A line shows the budget (quantity × frequency, unit cost, line cost, markup, gross profit, client
-  price), the project, where it's from (CE file, tab, row, final or another version, price date)
+- A line's card shows the unit cost, markup and client price; its detail shows the full budget
+  (quantity × frequency, unit cost, line cost, markup, gross profit, client price), the project, where it's from (CE file, tab, row, final or another version, price date)
   and what was actually paid (matched purchase orders; click a number to search for it).
+- "Where it's from" links to the project's CE in Google Sheets: the Universe's "Internal CE (Sheet)"
+  (`TABLES.live.universe` and `UNIVERSE` in `js/config.js`), matched on the project code. It's read
+  as the signed-in person (two columns, one page), in memory only; without it the line shows its CE
+  workbook's file name.
 - **Cloudflare only.** The tab is hidden whenever the Lark proxy is on its Render backup, when the
   line item service can't be reached or has no data, and when the service refuses the login.
   Settings > Connections ("Line items (CE)") says which; the rest of Suppliers carries on.
-- Kept in this tab's memory only, never in browser storage, and dropped when the login ends.
+- A saved copy (`suppliers.lines`) shows at once on the next visit. The service's `GET /` says when it
+  last rebuilt its lines; while that hasn't changed, they aren't downloaded again, and one small
+  `/lines?limit=1` read checks the person may still see them. Dropped like the records' copy, and
+  also the moment the service refuses the login (403).
 - Refreshing the data: re-run the CE pipeline and upload `data/d1/load.sql` (see
   `tech/anthropic-ce/README.md`, "Line items (D1)"). **Refresh** in Suppliers reads them again.
 
@@ -158,7 +165,7 @@ The gear in the top bar. It works logged out. Saved in this browser only.
 | Appearance | System, Light or Dark |
 | Prices | **Exchange rate** (PHP per 1 USD, 57 unless you change it) and **Show prices in**: their own currency, PHP or USD |
 | Connections | the connection service (Awake, Waking up…, Unreachable, Out of date) with **Wake up**; the Lark Base ("Connected · 3,410 records · newest Oct 30, 2026 · updated 4:44 PM") with **Refresh**; the table with **Open in Lark**. On this computer only: *Advanced: connection service address* |
-| This browser | **Clear local data**: the saved copy of the records, the exchange rate and the price display (Undo in the toast). The login and theme are kept |
+| This browser | **Clear local data**: the saved copies of the records and the CE line items, the exchange rate and the price display (Undo in the toast). The login and theme are kept |
 
 Browser storage (all JSON):
 
@@ -169,6 +176,7 @@ Browser storage (all JSON):
 | `mineski.auth.token` / `.user` | localStorage | the Lark login and your name and picture, **shared by every Mineski tool on this site** (through `js/session.js`, copied unedited from `design-ref/mineski-systems-design/assets/`) |
 | `suppliers.auth.pending` | sessionStorage | a login in progress (it finishes in the tab that started it) |
 | `suppliers.cache.<app>:<table>` | localStorage | the saved copy of the records: gzipped, without account numbers, bank names or addresses, tagged with who saved it. About 10% of the plain size |
+| `suppliers.lines` | localStorage | the saved copy of the CE line items: the service's rows gzipped, with when the service built them, tagged with who saved it. Includes internal costs and markups |
 | `suppliers.view` | sessionStorage | the search in the address bar while you're on Lark's login page |
 | `suppliers.override.lark` | sessionStorage | a `?lark=` test address (local page only) |
 
@@ -332,15 +340,20 @@ typed; rich text with a link inside no longer shows stray commas.
   end; Suppliers keeps it on purpose, at the team's request.) The records on screen are dropped from
   memory the moment a login ends.
 - **CE line items** (the Line Items tab) hold internal costs and markups. They are only sent to
-  people the line item service lets in (those who can open the procurement table), go over
-  `Authorization` only, stay in memory, and are never saved in the browser.
+  people the line item service lets in (those who can open the procurement table) and go over
+  `Authorization` only. Since 1.5.0 a saved copy stays in the browser between visits (costs and
+  markups included; nothing is left out, since they are the point of the tab), on the same terms
+  as the records' copy, and is also deleted when the service refuses the login. Someone who loses
+  access still sees their saved lines until that refusal comes back, a few seconds after loading.
 - The Lark proxy still has a public `/token` endpoint that hands out app tokens
   (`npm run check:proxy` fails on it). Suppliers doesn't use it; it should be removed.
 
 ## Known limits
 
-- A search returns at most 500 matches per tab; Browse all has no limit.
-- Line Items are read in full on every visit too (about 7 requests of 2,000 lines).
+- A search returns every match and sorts them in the browser. Fine for tens of thousands of rows;
+  far past that, `search()` in `js/search.js` and `js/lines.js` still takes a `limit`.
+- Line Items are read in full (about 7 requests of 2,000 lines) only when the line item service
+  has rebuilt them since the saved copy; otherwise one small read checks access.
 - The whole table is read on every visit (about 7 pages per 3,500 records). Past about
   100,000 records it stops and says so.
 - Lark's own permissions apply: someone who can't open the Base gets "Lark says your account
@@ -366,7 +379,6 @@ typed; rich text with a link inside no longer shows stray commas.
 | "Your login ended after about 2 hours. Log in again to keep going." | Log in again; your search comes back. |
 | "Your login ended in another tab. Log in again to keep going." | You (or someone at this computer) logged out of Suppliers, Fetch or Polaris in another tab, or Lark ended the login there. They share one login, so log in again in any of them. |
 | "Lark counted … records but … came back" | Someone changed the table while it was read. Press Refresh. |
-| "Showing the best 500 matches." | Add a word, a field filter or a filter to narrow it down. |
 | "No records match “…” with these filters." | Press **Reset filters**, or pick more statuses (only Approved is shown by default). |
 | A red **Overridden** badge | A test address is set on this computer: Settings > Advanced, or open the page with `?reset`. |
 | "Preview mode: sample data, nothing is sent anywhere" | You opened `?preview`. Open the page without it, in a new tab. |
@@ -399,7 +411,7 @@ typed; rich text with a link inside no longer shows stray commas.
 | `js/auth.js`, `js/net.js`, `js/errors.js`, `js/settings.js` | login and session, the proxy, error sentences, per-browser settings |
 | `js/session.js` | the login shared by every Mineski tool on the site (copied unedited from `design-ref/mineski-systems-design/assets/`) |
 | `js/tables.js`, `js/schema.js`, `js/rows.js` | reading the table, its columns, records to rows |
-| `js/cache.js` | the saved copy of the records |
+| `js/cache.js` | the saved copies of the records and the CE line items |
 | `js/query.js`, `js/search.js`, `js/vendor/orama.js` | the search language and list rules, ranking, Orama 3.1.18 |
 | `js/lines.js` | the Line Items tab: CE line rows and their search (pure, tested) |
 | `js/searchbar.js`, `js/filters.js`, `js/results.js`, `js/detail.js`, `js/carousel.js`, `js/present.js`, `js/settings-view.js` | the views |

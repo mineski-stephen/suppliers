@@ -79,3 +79,15 @@ test("at most 500 results; value suggestions are distinct", async () => {
   assert.deepEqual(index.fieldValues("nope", "x"), []);
   assert.deepEqual(await index.search("   "), []);
 });
+
+test("a purchase-order search returns every match, not just 500", async () => {
+  // The sample (about 420 records) twice over, each copy with its own record id.
+  const twice = [...rows, ...rows.map((r) => Object.defineProperty({ ...r }, "$id", { value: `${r.$id}-2`, enumerable: false }))];
+  const big = createIndex();
+  await big.build(twice);
+  const all = (await big.search("a", { exact: true })).length;
+  assert.ok(all > 500, `Exact found ${all}`);
+  const once = (await index.search("rental")).length;
+  assert.equal((await big.search("rental")).length, once * 2, "a word search keeps every copy");
+  assert.equal((await big.search("a", { exact: true, limit: 10 })).length, 10, "a limit still works when asked for");
+});

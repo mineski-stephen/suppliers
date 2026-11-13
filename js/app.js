@@ -13,23 +13,25 @@
  *
  * The Line Items tab (CE line items from anthropic-ce, js/lines.js) is read alongside the records (it starts
  * as soon as the Lark proxy answers, so it knows whether that's the Render backup), also
- * as the signed-in person, and kept the same way (memory only: they hold internal costs and markups).
+ * as the signed-in person. Like the records, a saved copy (js/cache.js, "suppliers.lines") shows at once
+ * on the next visit; while the service hasn't rebuilt its lines since, they aren't downloaded again
+ * (one small read checks the person may still see them). They hold internal costs and markups.
  * It is Cloudflare only: hidden whenever the Lark proxy is on its Render backup, when the line item
  * service can't be reached, or when the person isn't allowed to read it.
  */
-import { APP, ENV_LABEL, LARK, RULES } from "./config.js";
+import { APP, ENV_LABEL, LARK, RULES, UNIVERSE, tableLinks } from "./config.js";
 import { $, $$, h, ic, fillIcons, toast, fmt, store, recall, sleep, closeMenu } from "./ui.js";
 import * as settings from "./settings.js";
 import { cfg } from "./settings.js";
 import { larkService, ceService, ceGet, onAnyService, blockedHosts, describe, lark, unreachable } from "./net.js";
 import { isDeadToken, LarkError } from "./errors.js";
 import * as auth from "./auth.js";
-import { loadFields, loadRecords } from "./tables.js";
+import { loadFields, loadRecords, parseBaseLink } from "./tables.js";
 import { checkSchema } from "./schema.js";
 import { toRows, sortTime } from "./rows.js";
 import { createIndex } from "./search.js";
-import { createLineIndex, toLineRows, isLineId, defaultLineFilters, encodeLineFilters, decodeLineFilters, lineChoices } from "./lines.js";
-import { cacheKey, pack, unpack, ownerOf } from "./cache.js";
+import { createLineIndex, toLineRows, isLineId, defaultLineFilters, encodeLineFilters, decodeLineFilters, lineChoices, ceSheetLinks, projectKey } from "./lines.js";
+import { cacheKey, pack, unpack, ownerOf, LINES_KEY, packLines, unpackLines } from "./cache.js";
 import { TABS, detectExactPattern, highlightTerms, encodeState, decodeState, statsOf, recent } from "./query.js";
 import { createSearchBar } from "./searchbar.js";
 import { createFilters } from "./filters.js";
@@ -39,8 +41,9 @@ import { createCarousel } from "./carousel.js";
 import { createSettingsView } from "./settings-view.js";
 
 const KEY = { theme: "suppliers.theme", view: "suppliers.view" };
-// What "Clear local data" forgets (never the login or the theme): the settings and the saved copy of the records.
-const localKeys = () => ["suppliers.settings", ...(cfg().table.error ? [] : [cacheKey(cfg().table)])];
+// What "Clear local data" forgets (never the login or the theme): the settings and the saved copies of
+// the records and the CE line items.
+const localKeys = () => ["suppliers.settings", LINES_KEY, ...(cfg().table.error ? [] : [cacheKey(cfg().table)])];
 const LOW_SESSION_MS = 10 * 60 * 1000;
 
 /* ======================= state ======================= */
@@ -62,6 +65,8 @@ const S = {
   // The Line Items tab: CE line items (js/lines.js). linesState: off | loading | ok | error | denied.
   lines: null, lineById: new Map(), lineIndex: null, lineResults: null,
   linesState: "off", linesNote: "", linesAt: 0, linesSettled: false, linesProgress: null,
+  linesBuilt: null,         // when the line item service built the lines in hand (from its GET /)
+  ceLinks: null,            // project code -> its CE in Google Sheets (the Universe's "Internal CE (Sheet)")
   lineFilters: defaultLineFilters(),   // the Line Items tab's own filters, sort and groups (js/lines.js)
 };
 const prefs = () => ({ rate: settings.exchangeRate(), show: settings.showPrices() });
@@ -106,6 +111,7 @@ const ctx = {
     visible: linesVisible(), backup: !!larkService.status.backup }),
   reloadLines: () => loadLines({ force: true }),
   searchFor: (text) => searchFor(text),
+  ceSheet: (code) => (S.ceLinks && S.ceLinks.get(projectKey(code))) || "",
   setLineFilters: (patch) => setLineFilters(patch),
   resetLineFilters: () => setLineFilters(defaultLineFilters()),
   lineChoices: (col, blank) => lineChoices(S.lines, col, blank),
@@ -285,7 +291,7 @@ function paintStatus() {
   if (S.linesState === "loading") {
     const p = S.linesProgress;
     if (!S.loading) parts.push(h("span", { class: "spinner", "aria-hidden": "true" }));   // (the records' own spinner is already there)
-    parts.push(h("span", null, `${S.loading ? "· " : ""}Reading CE line items${p && p.total ? ` (${p.n.toLocaleString()} of ${p.total.toLocaleString()})` : ""}…`));
+    parts.push(h("span", null, `${S.loading ? "· " : ""}${S.lines && !p ? "Checking" : "Reading"} CE line items${p && p.total ? ` (${p.n.toLocaleString()} of ${p.total.toLocaleString()})` : ""}…`));
   } else if (linesVisible()) parts.push(h("span", null, `· ${fmt.plural(S.lines.length, "CE line item")}`));
   el.replaceChildren(...parts);
 }
@@ -355,7 +361,7 @@ function forgetRecords() {
   Object.assign(S, { rows: null, byId: new Map(), index: null, stats: null, schema: null, results: null, fresh: null, fromCache: false,
                      open: null, loadError: null, loadedAt: 0, countNote: "", user: null,
                      lines: null, lineById: new Map(), lineIndex: null, lineResults: null,
-                     linesState: "off", linesNote: "", linesAt: 0, linesSettled: false, linesProgress: null });
+                     linesState: "off", linesNote: "", linesAt: 0, linesSettled: false, linesProgress: null, linesBuilt: null, ceLinks: null });
   carousel.render([]);
   results.render();
   detail.render({ instant: true });   // the panel's text goes too (it may show a supplier's bank details)
@@ -429,6 +435,7 @@ async function load({ quiet = false, manual = false } = {}) {
       // Connected, so we know whether the Lark proxy is Cloudflare or the Render backup: the Line Items
       // tab's line items start now, side by side with the records (they come from another service).
       if (gen === S.gen && (!S.lines || manual)) loadLines({ force: manual });
+      if (gen === S.gen && (!S.ceLinks || manual)) loadCeLinks();
       S.waking = false;
       S.stage = "fields"; paintLoad();
       const schema = checkSchema(await loadFields(call, t));
@@ -484,7 +491,10 @@ const linesVisible = () => !!S.lineIndex && !larkService.status.backup;
 
 /** Read every CE line item from the line item service (anthropic-ce), page by page, as the signed-in
  *  person, and index them. Quietly: a failure hides the tab and Settings says why; Suppliers itself
- *  carries on. force: read again even if they're here (Refresh). */
+ *  carries on. force: read again even if they're here (Refresh).
+ *  This person's saved copy (js/cache.js) shows at once. While the service's lines haven't been rebuilt
+ *  since (its `built`), they aren't downloaded again: one small read only checks this person may still
+ *  see them. A refusal (403) drops the lines, saved copy included. */
 async function loadLines({ force = false } = {}) {
   if (S.linesState === "loading" || !auth.currentToken() || (S.lines && !force)) return;
   if (larkService.status.backup) {
@@ -497,6 +507,15 @@ async function loadLines({ force = false } = {}) {
   Object.assign(S, { linesState: "loading", linesNote: "", linesProgress: null });
   if (S.view === "search") { paintStatus(); paintLinesBusy(); }
   try {
+    if (!S.lines) {
+      const saved = await readLinesCache();
+      if (gen !== S.gen) return;
+      if (saved) {
+        await putLines(toLineRows(saved.columns, saved.rows), { at: saved.at, built: saved.built });
+        if (gen !== S.gen) return;
+        render();
+      }
+    }
     if (!await ceService.wake()) {
       throw new LarkError("line item service unreachable", { userMessage: ceService.status.state === "outdated"
         ? `The line item service is out of date (${ceService.status.detail}). Ask the admin to redeploy it.`
@@ -504,8 +523,17 @@ async function loadLines({ force = false } = {}) {
     }
     const avail = (ceService.status.info || {}).lines || {};
     if (!avail.available) throw new LarkError("no line items", { userMessage: avail.reason || "The line item service has no line items yet." });
+    if (S.lines && S.linesBuilt && avail.built && S.linesBuilt === avail.built) {
+      // Unchanged since the copy in hand: only check this person may still read them.
+      const t = auth.currentToken();
+      if (!t) return;
+      await ceGet("/lines?after=0&limit=1", t.access_token);
+      if (gen !== S.gen) return;
+      Object.assign(S, { linesState: "ok", linesNote: "", linesSettled: true, linesProgress: null });
+      return;
+    }
     const raw = [];
-    let columns = null, after = 0;
+    let columns = null, after = 0, built = avail.built || null;
     for (;;) {
       const t = auth.currentToken();
       if (!t || gen !== S.gen) return;
@@ -513,25 +541,29 @@ async function loadLines({ force = false } = {}) {
       if (gen !== S.gen) return;
       columns = columns || page.columns || [];
       raw.push(...(page.rows || []));
+      if (page.dataset && page.dataset.built) built = page.dataset.built;
       S.linesProgress = { n: raw.length, total: (page.dataset && page.dataset.rows) || 0 };
       if (S.view === "search") { paintStatus(); paintLinesBusy(); }
       if (!page.next) break;
       after = page.next;
     }
-    const rows = toLineRows(columns, raw);
-    const index = createLineIndex();
-    await index.build(rows);
+    const at = Date.now();
+    await putLines(toLineRows(columns, raw), { at, built });
     if (gen !== S.gen) return;
-    Object.assign(S, { lines: rows, lineIndex: index, lineById: new Map(rows.map((r) => [r.$id, r])),
-      linesState: "ok", linesNote: "", linesAt: Date.now(), linesSettled: true, linesProgress: null });
-    if (bar.fullQuery() || S.browse) await runSearch({ keepScroll: true, keepOpen: true });
+    Object.assign(S, { linesState: "ok", linesNote: "", linesSettled: true, linesProgress: null });
+    saveLinesCache(columns, raw, { at, built });
   } catch (err) {
     if (gen !== S.gen) return;
+    if (err.status === 403) {   // no longer allowed: the lines in hand and the saved copy go
+      store("local", LINES_KEY);
+      Object.assign(S, { lines: null, lineIndex: null, lineById: new Map(), lineResults: null, linesBuilt: null, linesAt: 0 });
+    }
     Object.assign(S, { linesState: err.status === 403 || err.status === 401 ? "denied" : "error", linesSettled: true, linesProgress: null,
       linesNote: err.userMessage || describe(err) });
     if (S.lines) S.linesState = "ok";   // a failed refresh keeps the line items already here
   } finally {
     if (gen === S.gen) {
+      if (S.linesState === "loading") Object.assign(S, { linesState: S.lines ? "ok" : "off", linesSettled: true, linesProgress: null });
       if (S.open && isLineId(S.open) && !S.lineById.has(S.open) && S.linesSettled) {
         toast("That CE line item isn't available here, or your account can't see it.", { type: "info" });
         closeRecord();
@@ -539,6 +571,53 @@ async function loadLines({ force = false } = {}) {
       render();
     }
   }
+}
+
+/** Index line rows and put them in place (the search runs again over them). */
+async function putLines(rows, { at, built }) {
+  const gen = S.gen;
+  const index = createLineIndex();
+  await index.build(rows);
+  if (gen !== S.gen) return;
+  Object.assign(S, { lines: rows, lineIndex: index, lineById: new Map(rows.map((r) => [r.$id, r])), linesAt: at, linesBuilt: built || null });
+  if (bar.fullQuery() || S.browse) await runSearch({ keepScroll: true, keepOpen: true });
+}
+
+/** This person's saved copy of the line items, or null (someone else's or an old format is dropped). */
+async function readLinesCache() {
+  const saved = recall("local", LINES_KEY);
+  if (!saved) return null;
+  const owner = ownerOf(await auth.loadUser().catch(() => null));
+  const got = owner ? await unpackLines(saved, owner).catch(() => null) : null;
+  if (!got && owner) store("local", LINES_KEY);
+  return got;
+}
+/** Save the line items for next time (quietly: a full browser storage just means no saved copy). */
+async function saveLinesCache(columns, rows, { at, built }) {
+  try {
+    const owner = ownerOf(auth.user() || await auth.loadUser());
+    if (!owner || !auth.currentToken()) return;
+    const gen = S.gen;
+    const packed = await packLines(columns, rows, { owner, at, built });
+    if (gen === S.gen) store("local", LINES_KEY, packed);
+  } catch (_) { /* no saved copy this time */ }
+}
+
+/** The Universe's CE links (project code -> Google Sheets), for a line item's "Where it's from". Read as the
+ *  signed-in person, two columns only, kept in memory. Quietly: without them a line shows its file name. */
+const universeTable = (() => { try { return tableLinks().universe ? parseBaseLink(tableLinks().universe) : null; } catch (_) { return null; } })();
+let ceLinksBusy = false;
+async function loadCeLinks() {
+  if (!universeTable || ceLinksBusy || !auth.currentToken()) return;
+  ceLinksBusy = true;
+  const gen = S.gen;
+  try {
+    const items = await loadRecords(call, universeTable, [UNIVERSE.code, UNIVERSE.ceSheet]);
+    if (gen !== S.gen) return;
+    S.ceLinks = ceSheetLinks(items, UNIVERSE);
+    if (S.open && isLineId(S.open)) detail.render({ instant: true });
+  } catch (_) { /* no access to the Universe, or it changed: lines show their file name */ }
+  finally { ceLinksBusy = false; }
 }
 
 /** While line items load: the refresh button spins, and the Line Items tab (if it's showing) counts up. */
@@ -581,7 +660,7 @@ async function saveCache(t, rows, at) {
     if (gen === S.gen) store("local", cacheKey(t), packed);
   } catch (_) { /* no saved copy this time */ }
 }
-function dropCache() { if (!cfg().table.error) store("local", cacheKey(cfg().table)); }
+function dropCache() { if (!cfg().table.error) store("local", cacheKey(cfg().table)); store("local", LINES_KEY); }
 
 /* ======================= searching ======================= */
 let seq = 0;
@@ -701,7 +780,7 @@ function clearLocal() {
   settings.rebuild();
   pricesChanged();
   settingsView.paint();
-  toast("Cleared the saved records, the exchange rate and the price display in this browser.", {
+  toast("Cleared the saved records and line items, the exchange rate and the price display in this browser.", {
     type: "success", detail: "Your login and theme are kept.", action: "Undo", onAction: () => {
       saved.forEach(([k, v]) => { if (v !== null) store("local", k, v); });
       settings.rebuild();

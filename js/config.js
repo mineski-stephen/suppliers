@@ -13,7 +13,7 @@
 
 /* version: bump it with every release and add an entry to CHANGELOG.md (newest first, same number).
    The top bar shows it beside the name. */
-export const APP = { name: "Suppliers", key: "suppliers", version: "1.4.2", env: "live" };   // env: "live" | "test"
+export const APP = { name: "Suppliers", key: "suppliers", version: "1.5.2", env: "live" };   // env: "live" | "test"
 export const ENV_LABEL = APP.env === "test" ? "Test copy" : "";   // display only, never a gate
 
 export const SERVICES = {   // hosted defaults; `min` and `headers` are checked on every wake
@@ -42,10 +42,17 @@ export const LARK = {
 // One Lark link per table, exactly as copied from the address bar. The table is read in
 // full (never through a view). People need access to this Base in Lark to use Suppliers.
 export const TABLES = {
-  live: { procurement: "https://mineskiglobal.larksuite.com/base/NP7TbjwHNaTyLOsWafelN9wNgEd?table=tbl3ki9aAQsWCJuR" },
+  live: {
+    procurement: "https://mineskiglobal.larksuite.com/base/NP7TbjwHNaTyLOsWafelN9wNgEd?table=tbl3ki9aAQsWCJuR",
+    // The Universe (one row per project): only its CE link is read, for a CE line item's "Where it's from".
+    // Optional: without it (or without access to it) a line shows its CE workbook's file name instead.
+    universe: "https://mineskiglobal.larksuite.com/base/NP7TbjwHNaTyLOsWafelN9wNgEd?table=tblEmWYOXoAF70uf",
+  },
   // A copy for trying things out. An empty link stops the page at start-up: it never falls back to live.
-  test: { procurement: "" },
+  test: { procurement: "", universe: "" },
 };
+// The Universe columns read (by name, exactly as in Lark): the project code and its CE in Google Sheets.
+export const UNIVERSE = { code: "Project Code", ceSheet: "Internal CE (Sheet)" };
 
 export const RULES = {
   exchangeRate: 57,            // PHP per 1 USD until someone sets their own in Settings
@@ -55,9 +62,8 @@ export const RULES = {
   defaultStatuses: ["Approved"],
   // Results with about the same relevance are ordered by status, in this order.
   statusPriority: ["Approved", "Under Review", "Rejected", "Recalled"],
-  searchLimit: 500,            // the most matches one search returns per tab
-  recentCount: 20,
-  linesPage: 2000,             // CE line items read per request (the service's most)             // cards in "Recent orders" (then a card that opens Browse all)
+  recentCount: 20,             // cards in "Recent orders" (then a card that opens Browse all)
+  linesPage: 2000,             // CE line items read per request (the service's most)
   chunk: 100,                  // results drawn at a time ("Show more")
   staleAfterMs: 30 * 60000,    // coming back to the tab after this long refreshes quietly
 };

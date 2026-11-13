@@ -10,7 +10,7 @@ import { $, $$, h, fmt } from "./ui.js";
 import { RULES } from "./config.js";
 import { dayLabel } from "./rows.js";
 import { applyFilters, groupResults, priceText, TABS, hiddenBy } from "./query.js";
-import { statusBadge, marked, itemNodes, pricesOf, supplierOf, lineBadge, lineQty } from "./present.js";
+import { statusBadge, marked, itemNodes, pricesOf, supplierOf, lineBadge } from "./present.js";
 import { applyLineFilters, lineHiddenBy, groupLines } from "./lines.js";
 
 export function createResults(ctx) {
@@ -47,13 +47,14 @@ export function createResults(ctx) {
   }
 
   /** One CE line item: project code and CE tab, final or not; the particular; the project with the
-   *  budgeted cost on the right; the category and the price date. */
+   *  unit cost, markup and client price on the right; the category and the price date. */
   function lineCard(r, terms, i = 0) {
     const row = r.item, id = row.$id;
     const { show, rate } = ctx.prefs();
     const unit = priceText(row.unit_price_php, "PHP", show, rate);
-    const total = priceText(row.base_price_php, "PHP", show, rate);
-    const qty = lineQty(row);
+    const client = priceText(row.client_price_php, "PHP", show, rate);
+    const markup = row.markup === null || row.markup === undefined ? ""
+      : `${(Number(row.markup) * 100).toLocaleString("en-US", { maximumFractionDigits: 1 })}% markup`;
     const date = dayLabel(row.price_date);
     return h("a", { class: `card result result-line${animate ? " is-entering" : ""}`, href: `#/r/${encodeURIComponent(id)}`, dataset: { id },
                     style: animate ? `--i:${Math.min(i, 15)}` : null, "aria-current": S.open === id ? "true" : null },
@@ -63,9 +64,9 @@ export function createResults(ctx) {
       h("h3", { class: "result-title" }, marked(row.particular || row.item || "No particular", terms)),
       h("div", { class: "result-meta" },
         h("span", { class: "result-supplier" }, marked(row.project_name || row.client || "No project name", terms)),
-        unit || total ? h("div", { class: "result-pricing" },
-          unit ? h("span", { class: "result-unit" }, `${qty} × ${unit}`) : null,
-          total ? h("b", { class: "result-total" }, `Cost ${total}`) : null) : null),
+        unit || markup || client ? h("div", { class: "result-pricing" },
+          unit || markup ? h("span", { class: "result-unit" }, [unit && `Unit ${unit}`, markup].filter(Boolean).join(" · ")) : null,
+          client ? h("b", { class: "result-total" }, `Client ${client}`) : null) : null),
       h("div", { class: "result-foot" },
         row.category ? h("span", { class: "result-project" }, row.category) : null,
         row.actual_php ? h("span", { class: "result-date" }, `Paid ${priceText(row.actual_php, "PHP", show, rate)}`) : null,
@@ -153,12 +154,10 @@ export function createResults(ctx) {
     const parts = [hid.status ? `${hid.status.toLocaleString()} with another status` : "",
                    hid.outsource ? `${hid.outsource.toLocaleString()} ${S.filters.outsource === "hide" ? "outsourced" : "not outsourced"}` : "",
                    hid.currency ? `${hid.currency.toLocaleString()} in another currency` : ""].filter(Boolean);
-    const capped = !S.browse && S.results.some((list) => list.length >= RULES.searchLimit);
     // (replaceChildren would print a null as "null": leave the missing parts out instead)
     noteEl.replaceChildren(...[
       n && parts.length ? h("span", null, `Not shown: ${parts.join(" · ")}. `) : null,
       n && parts.length ? h("button", { type: "button", class: "linkish", onclick: () => ctx.resetFilters() }, "Reset filters") : null,
-      capped ? h("span", { class: "capped" }, `${parts.length && n ? " " : ""}Showing the best ${RULES.searchLimit.toLocaleString()} matches. Add a word or a filter to narrow it down.`) : null,
     ].filter(Boolean));
     noteEl.hidden = !noteEl.childElementCount;
     if (!keepScroll) window.scrollTo(0, 0); else window.scrollTo(0, scroll);
@@ -208,11 +207,9 @@ export function createResults(ctx) {
                    hid.outcome ? `${hid.outcome.toLocaleString()} with another outcome` : "",
                    hid.category ? `${hid.category.toLocaleString()} in another category` : "",
                    hid.po ? `${hid.po.toLocaleString()} ${f.po === "yes" ? "without" : "with"} a purchase order` : ""].filter(Boolean);
-    const capped = !S.browse && raw.length >= RULES.searchLimit;
     noteEl.replaceChildren(...[
       n && parts.length ? h("span", null, `Not shown: ${parts.join(" · ")}. `) : null,
       n && parts.length ? h("button", { type: "button", class: "linkish", onclick: () => ctx.resetLineFilters() }, "Reset filters") : null,
-      capped ? h("span", { class: "capped" }, `${parts.length && n ? " " : ""}Showing the best ${RULES.searchLimit.toLocaleString()} matches. Add a word to narrow it down.`) : null,
     ].filter(Boolean));
     noteEl.hidden = !noteEl.childElementCount;
     if (!keepScroll) window.scrollTo(0, 0); else window.scrollTo(0, scroll);

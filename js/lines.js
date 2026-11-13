@@ -4,7 +4,8 @@
  * The lines come from the anthropic-ce service (GET /lines, Cloudflare D1), one row per distinct
  * line of a cost estimate (CE) per workbook: what the CE budgeted (unit cost, markup, client price),
  * where it came from (project, CE file, tab, row) and what was actually paid (matched purchase
- * orders). They hold internal costs and markups, so they stay in this tab's memory only.
+ * orders). They hold internal costs and markups. js/app.js keeps a saved copy (js/cache.js) for the
+ * next visit, owner-tagged and dropped on Log out, Clear local data or a refusal.
  *
  * A line row is a plain object keyed by the service's column names (line_key, particular, …);
  * text stays text and numbers stay numbers. Its id rides along as row.$id ("line:<line_key>"),
@@ -15,7 +16,6 @@
  * a line has (project_code, project_name, business_unit, particular_item).
  */
 import { create, insert, search as oramaSearch } from "./vendor/orama.js";
-import { RULES } from "./config.js";
 import { parseFieldFilters, parseQuery, rowContainsPhrases, rowContainsExcludes } from "./query.js";
 
 export const LINE_PREFIX = "line:";
@@ -110,9 +110,12 @@ export function createLineIndex() {
   /** Every line, final CEs first, newest price first (Browse all). */
   const all = () => rows.map((item) => ({ item, score: 0 })).sort(lineSort);
 
-  /** Search: [{ item: row, score }] best first. opts = { exact, limit }. */
-  async function search(query, { exact = false, limit = RULES.searchLimit } = {}) {
+  /** Search: [{ item: row, score }] best first. opts = { exact, limit }. Every match by default (no 500 cap
+   *  as on the purchase orders): the list draws 100 at a time, and the filters, counts and group totals
+   *  must see every match. */
+  async function search(query, { exact = false, limit = 0 } = {}) {
     if (!String(query || "").trim() || !ready) return [];
+    limit = limit > 0 ? limit : Math.max(rows.length, 1);
     const { fieldFilters, rest } = parseFieldFilters(query);
     const has = fieldFilters.length > 0;
     const fits = (row) => !has || lineMatchesFieldFilters(row, fieldFilters);
@@ -289,5 +292,29 @@ export function decodeLineFilters(search) {
   const g = String(p.get("lgroup") || "").toLowerCase();
   const key = Object.keys(LINE_GROUPS).find((k) => LINE_GROUPS[k][1] === g);
   if (key) out.group = key;
+  return out;
+}
+
+// ---- the CE in Google Sheets, from the Universe ---------------------------------------------------
+const cellText = (v) => {
+  if (v === null || v === undefined) return "";
+  if (Array.isArray(v)) return v.map(cellText).join("");
+  if (typeof v === "object") return String(v.link || v.text || "");
+  return String(v);
+};
+/** A project code as compared: trimmed, any case. */
+export const projectKey = (code) => String(code || "").trim().toUpperCase();
+/** Universe records ({ fields }) -> Map(project code -> its "Internal CE (Sheet)" link). Only https links;
+ *  a project listed twice keeps its first link. */
+export function ceSheetLinks(items, { code = "Project Code", ceSheet = "Internal CE (Sheet)" } = {}) {
+  const out = new Map();
+  for (const it of items || []) {
+    const f = (it && it.fields) || {};
+    const k = projectKey(cellText(f[code]));
+    const v = f[ceSheet];
+    const link = (v && typeof v === "object" && !Array.isArray(v) ? String(v.link || v.text || "") : cellText(v)).trim();
+    if (!k || !link || out.has(k)) continue;
+    try { if (new URL(link).protocol === "https:") out.set(k, link); } catch (_) { /* not a link */ }
+  }
   return out;
 }

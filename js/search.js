@@ -2,7 +2,7 @@
  * Full-text search over the procurement rows: Orama (BM25, typo tolerance 1) plus the exact,
  * phrase, exclude and field-filter rules of query.js. No DOM and no network, so the Node tests
  * run it on the sample data. The ranking is the old page's, unchanged:
- *   1. BM25 hits (limit 500), scored 0 (best) to 1 against the best hit
+ *   1. BM25 hits (every match: no cap, the list draws 100 at a time), scored 0 (best) to 1 against the best hit
  *   2. phrases, excludes and field filters narrow them
  *   3. hits whose row contains the search text literally come first; within each part,
  *      results within 0.05 of each other are ordered by status (Approved first)
@@ -10,7 +10,6 @@
  * can't change under the page and the CSP needs no CDN.
  */
 import { create, insert, search as oramaSearch } from "./vendor/orama.js";
-import { RULES } from "./config.js";
 import {
   FILTER_FIELDS, parseFieldFilters, rowMatchesFieldFilters, parseQuery,
   rowContainsPhrases, rowContainsExcludes, statusPrioritySort,
@@ -73,9 +72,11 @@ export function createIndex() {
       .some((v) => typeof v === "string" && v.toLowerCase().includes(q)), limit);
   }
 
-  /** Search: [{ item: row, score }] best first. opts = { tab, exact, limit }. */
-  async function search(query, { tab = "all", exact = false, limit = RULES.searchLimit } = {}) {
+  /** Search: [{ item: row, score }] best first. opts = { tab, exact, limit }. Every match unless a
+   *  limit is given: the filters (status first), counts and group totals must see them all. */
+  async function search(query, { tab = "all", exact = false, limit = 0 } = {}) {
     if (!String(query || "").trim() || !ready) return [];
+    limit = limit > 0 ? limit : Math.max(rows.length, 1);
     const { fieldFilters, rest } = parseFieldFilters(query);
     const has = fieldFilters.length > 0;
     if (has && !rest) return scan((row) => rowMatchesFieldFilters(row, fieldFilters), limit);
