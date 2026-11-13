@@ -47,7 +47,8 @@ export function createResults(ctx) {
   }
 
   /** One CE line item: project code and CE tab, final or not; the particular; the project with the
-   *  unit cost, markup and client price on the right; the category and the price date. */
+   *  unit cost, markup and client price on the right; the project (where a purchase order shows
+   *  its project), what was paid and the price date. */
   function lineCard(r, terms, i = 0) {
     const row = r.item, id = row.$id;
     const { show, rate } = ctx.prefs();
@@ -63,12 +64,12 @@ export function createResults(ctx) {
         lineBadge(row)),
       h("h3", { class: "result-title" }, marked(row.particular || row.item || "No particular", terms)),
       h("div", { class: "result-meta" },
-        h("span", { class: "result-supplier" }, marked(row.project_name || row.client || "No project name", terms)),
+        h("span", { class: "result-supplier" }, marked(row.category || "Uncategorised", terms)),
         unit || markup || client ? h("div", { class: "result-pricing" },
           unit || markup ? h("span", { class: "result-unit" }, [unit && `Unit ${unit}`, markup].filter(Boolean).join(" · ")) : null,
           client ? h("b", { class: "result-total" }, `Client ${client}`) : null) : null),
       h("div", { class: "result-foot" },
-        row.category ? h("span", { class: "result-project" }, row.category) : null,
+        h("span", { class: "result-project" }, marked(row.project_name || row.client || "No project name", terms)),
         row.actual_php ? h("span", { class: "result-date" }, `Paid ${priceText(row.actual_php, "PHP", show, rate)}`) : null,
         date ? h("span", { class: "result-date" }, date) : null));
   }

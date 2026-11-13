@@ -9,6 +9,11 @@ or links stop working), add an entry here with the same number and the date,
 and say what changed in the team's words. `npm run check:shell` fails if the
 two numbers differ.
 
+## 1.5.3 · Nov 13, 2026
+
+- On a line item card, the project name and the category swap places: the project now sits at
+  the bottom, where a purchase order card shows its project, and the category under the title.
+
 ## 1.5.2 · Nov 13, 2026
 
 - Purchase-order searches now find every match too, not just the first 500. The status filter
